@@ -56,8 +56,9 @@ class FreiburgDataset(Dataset):
                 thermal_images = []
                 
                 # Look for images directly in the drive directory
-                rgb_files = sorted(glob.glob(os.path.join(drive_path, '*rgb*.png')))
-                thermal_files = sorted(glob.glob(os.path.join(drive_path, '*ir*.png')))
+                # FIX: Ignoring the label folders 
+                rgb_files = sorted(glob.glob(os.path.join(drive_path, 'fl_rgb', '*.png')))
+                thermal_files = sorted(glob.glob(os.path.join(drive_path, 'fl_ir_aligned', '*.png')))
                 
                 # If not found, try looking in subdirectories
                 if not rgb_files or not thermal_files:
@@ -99,39 +100,37 @@ class FreiburgDataset(Dataset):
     def __getitem__(self, idx):
         pair = self.pairs[idx]
         
-        # Load RGB image
+        # Load RGB
         rgb_path = pair['rgb']
         rgb_img = cv2.imread(rgb_path)
+        if rgb_img is None:
+            # If even the RGB can't be read, skip
+            print(f"Warning: Could not read RGB file: {rgb_path}, skipping.")
+            return None
         rgb_img = cv2.cvtColor(rgb_img, cv2.COLOR_BGR2RGB)
         rgb_img = cv2.resize(rgb_img, self.img_size)
-        print(f"Loaded RGB from {rgb_path}, shape={rgb_img.shape}, min={rgb_img.min()}, max={rgb_img.max()}")
         rgb_img = rgb_img.astype(np.float32) / 255.0
-        print(f"Loaded RGB from {rgb_path}, shape={rgb_img.shape}, min={rgb_img.min()}, max={rgb_img.max()}")
 
-        
-        # Load thermal image - handling 16-bit if necessary
+        # Load Thermal
         thermal_path = pair['thermal']
         thermal_img = cv2.imread(thermal_path, cv2.IMREAD_ANYDEPTH)
-        
+        if thermal_img is None:
+            # <--- KEY: skip sample if thermal is missing
+            print(f"Warning: Could not read thermal file: {thermal_path}, skipping.")
+            return None
+
         if thermal_img.dtype == np.uint16:
             thermal_img = thermal_img.astype(np.float32) / 65535.0
         else:
             thermal_img = thermal_img.astype(np.float32) / 255.0
         
-        # Convert thermal to 3 channels (required by DUSt3R model)
         if len(thermal_img.shape) == 2:
-            thermal_img = np.stack([thermal_img] * 3, axis=-1)
-        
+            thermal_img = np.stack([thermal_img]*3, axis=-1)
         thermal_img = cv2.resize(thermal_img, self.img_size)
-        
-        # Apply transforms if available
-        if self.transform:
-            rgb_img = self.transform(rgb_img)
-            thermal_img = self.transform(thermal_img)
-        else:
-            # Convert to PyTorch tensors (CxHxW)
-            rgb_img = torch.from_numpy(rgb_img.transpose(2, 0, 1)).float()
-            thermal_img = torch.from_numpy(thermal_img.transpose(2, 0, 1)).float()
+
+        # Convert to torch
+        rgb_img = torch.from_numpy(rgb_img.transpose(2, 0, 1)).float()
+        thermal_img = torch.from_numpy(thermal_img.transpose(2, 0, 1)).float()
         
         sample = {
             'rgb': rgb_img,
