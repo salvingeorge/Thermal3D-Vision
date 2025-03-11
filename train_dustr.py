@@ -6,18 +6,19 @@ import torch
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
-from torch.utils.data import DataLoader, default_collate
+from torch.utils.data import DataLoader, default_collate, random_split
 import torch.nn.functional as F
 import wandb
 from tqdm import tqdm
 
-# Import your dataset class and the helper for splitting
-from data.freiburg_dataset import FreiburgDataset, create_freiburg_dataloaders
+# Import your dataset class.
+from data.freiburg_dataset import FreiburgDataset
 
 def skip_none_collate(batch):
     """Custom collate function to filter out None samples."""
     batch = [x for x in batch if x is not None]
     if len(batch) == 0:
+        # Return an empty dict that can be checked in the training loop.
         return {}
     return default_collate(batch)
 
@@ -37,6 +38,7 @@ def load_dustr_model(weights_path, device=None):
     from mast3r.model import AsymmetricMASt3R
     model = AsymmetricMASt3R.from_pretrained(weights_path, weights_only=True).to(device)
     model.train()  # Set to training mode
+    # Ensure all parameters require gradients.
     for param in model.parameters():
         param.requires_grad = True
     return model
@@ -129,14 +131,25 @@ def main():
                config=vars(args),
                name=f"DUSt3R_ft_ep{args.epochs}_bs{args.batch_size}_lr{args.lr}")
 
-    # Split the dataset into training and validation sets using the helper.
-    train_loader, val_loader = create_freiburg_dataloaders(
+    # Create the full dataset.
+    dataset = FreiburgDataset(
         root_dir=args.dataset_dir,
-        batch_size=args.batch_size,
+        sequences=None,
         img_size=tuple(args.img_size),
-        pseudo_gt_dir=args.pseudo_gt_dir,
-        split=0.8  # 80% training, 20% validation
+        use_pseudo_gt=True,
+        pseudo_gt_dir=args.pseudo_gt_dir
     )
+    
+    # Manually split the dataset into training and validation sets.
+    split_ratio = 0.8
+    train_size = int(len(dataset) * split_ratio)
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+    
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
+                              num_workers=4, collate_fn=skip_none_collate)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
+                            num_workers=4, collate_fn=skip_none_collate)
 
     # Load the DUSt3R model (small variant)
     model = load_dustr_model(args.weights, device)
@@ -151,7 +164,8 @@ def main():
     for epoch in range(args.epochs):
         model.train()
         running_loss = 0.0
-        pbar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoch {epoch+1}/{args.epochs}")
+        pbar = tqdm(enumerate(train_loader), total=len(train_loader),
+                    desc=f"Epoch {epoch+1}/{args.epochs}")
         for batch_idx, batch in pbar:
             if not batch or "thermal" not in batch or "depth" not in batch:
                 continue
@@ -197,13 +211,14 @@ def main():
         print(f"Epoch [{epoch+1}/{args.epochs}] Average Training Loss: {avg_train_loss:.4f}")
         wandb.log({"epoch": epoch+1, "train_loss": avg_train_loss})
         
-        # Validation loop
+        # Validation loop.
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
-            val_pbar = tqdm(enumerate(val_loader), total=len(val_loader), desc=f"Validation Epoch {epoch+1}")
+            val_pbar = tqdm(enumerate(val_loader), total=len(val_loader),
+                            desc=f"Validation Epoch {epoch+1}")
             for batch_idx, batch in val_pbar:
-                if batch is None or "thermal" not in batch or "depth" not in batch:
+                if not batch or "thermal" not in batch or "depth" not in batch:
                     continue
                 thermal_imgs = batch["thermal"].to(device)
                 gt_depths = batch["depth"].to(device)

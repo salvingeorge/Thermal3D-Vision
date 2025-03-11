@@ -173,3 +173,5 @@ cython_debug/
 psuedo_gt/
 /pseudo_gt/*
 freiburg_samples/
+wandb/*
+checkpoints/
