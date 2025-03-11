@@ -8,6 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, default_collate
 import torch.nn.functional as F
+import wandb
 
 # Import your dataset class.
 from data.freiburg_dataset import FreiburgDataset
@@ -35,7 +36,7 @@ def load_dustr_model(weights_path, device=None):
     from mast3r.model import AsymmetricMASt3R
     model = AsymmetricMASt3R.from_pretrained(weights_path, weights_only=True).to(device)
     model.train()  # Set to training mode
-    # Ensure all parameters require gradients (in case some are frozen by default)
+    # Ensure all parameters require gradients.
     for param in model.parameters():
         param.requires_grad = True
     return model
@@ -65,7 +66,6 @@ def extract_depth_from_output(output):
     else:
         raise ValueError("Unexpected output type from model.")
     
-    # If pred1 is a dict, extract pts3d; otherwise assume pred1 is already pts3d.
     if isinstance(pred1, dict):
         if "pts3d" not in pred1:
             raise KeyError("Output does not contain 'pts3d'. Keys: " + str(list(pred1.keys())))
@@ -73,14 +73,36 @@ def extract_depth_from_output(output):
     else:
         pts3d = flatten_tensor(pred1)
     
-    # If pts3d is of shape [2, H, W, 3], select the first element.
     if pts3d.shape[0] > 1:
         pts3d = pts3d[0]
     
-    # Slice the z-channel.
     depth_tensor = pts3d[:, :, 2]  # shape [H, W]
-    # Ensure the tensor requires grad.
     return depth_tensor
+
+def log_sample_images(wandb_run, rgb_img, thermal_img, pred_depth, gt_depth, sample_name):
+    """Log a side-by-side visualization using matplotlib and wandb."""
+    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+    
+    axes[0].imshow(rgb_img)
+    axes[0].set_title("RGB Image")
+    axes[0].axis("off")
+    
+    axes[1].imshow(thermal_img, cmap="inferno")
+    axes[1].set_title("Thermal Image")
+    axes[1].axis("off")
+    
+    axes[2].imshow(pred_depth, cmap="plasma")
+    axes[2].set_title("Predicted Depth")
+    axes[2].axis("off")
+    plt.colorbar(axes[2].images[0], ax=axes[2])
+    
+    axes[3].imshow(gt_depth, cmap="plasma")
+    axes[3].set_title("Pseudo-GT Depth")
+    axes[3].axis("off")
+    plt.colorbar(axes[3].images[0], ax=axes[3])
+    
+    wandb_run.log({sample_name: wandb.Image(fig, caption=sample_name)})
+    plt.close(fig)
 
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune DUSt3R on pseudo-annotated thermal images")
@@ -98,9 +120,13 @@ def main():
     parser.add_argument("--img_size", type=int, nargs=2, default=[224,224],
                         help="Resize dimension (width height)")
     parser.add_argument("--device", type=str, default="cuda", help="Device: 'cuda' or 'cpu'")
+    parser.add_argument("--log_interval", type=int, default=100, help="Interval (in batches) for logging sample images")
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+
+    # Initialize wandb.
+    wandb.init(project="thermal-3d-vision", config=vars(args))
 
     # Create the training dataset.
     train_dataset = FreiburgDataset(
@@ -121,9 +147,10 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     print("Starting fine-tuning DUSt3R on thermal images with pseudo-GT depth...")
+    global_step = 0
     for epoch in range(args.epochs):
         running_loss = 0.0
-        for batch in train_loader:
+        for batch_idx, batch in enumerate(train_loader):
             if batch is None or "thermal" not in batch or "depth" not in batch:
                 continue
             thermal_imgs = batch["thermal"].to(device)  # [B, 3, H, W]
@@ -133,15 +160,14 @@ def main():
             loss_total = torch.tensor(0.0, device=device)
             B = thermal_imgs.size(0)
             for i in range(B):
-                # Prepare pair: duplicate the thermal image.
                 view1 = {"img": thermal_imgs[i].unsqueeze(0), "instance": []}
                 view2 = {"img": thermal_imgs[i].unsqueeze(0), "instance": []}
-                # Forward pass: call model directly (do not use inference() wrapper).
+                # Directly call the model's forward pass.
                 output = model(view1, view2)
                 try:
-                    pred_depth_tensor = extract_depth_from_output(output)  # [H, W]
+                    pred_depth_tensor = extract_depth_from_output(output)  # shape: [H, W] (e.g., 224x224)
                     pred_depth_tensor = pred_depth_tensor.to(device)
-                    gt_depth_sample = gt_depths[i].unsqueeze(0).unsqueeze(0)  # [1, 1, H_gt, W_gt]
+                    gt_depth_sample = gt_depths[i].unsqueeze(0).unsqueeze(0)  # shape: [1, 1, H_gt, W_gt]
                     gt_depth_resized = F.interpolate(gt_depth_sample, size=(args.img_size[1], args.img_size[0]),
                                                     mode='bilinear', align_corners=False)
                     gt_depth_resized = gt_depth_resized.squeeze(0).squeeze(0)  # [args.img_size[1], args.img_size[0]]
@@ -150,20 +176,33 @@ def main():
                     loss_total += loss
                 except Exception as e:
                     print(f"Error in loss computation: {e}")
-                # Delete output to free memory and empty cache
                 del output
                 torch.cuda.empty_cache()
+                global_step += 1
+                # Optionally log sample images every log_interval batches
+                if global_step % args.log_interval == 0:
+                    # For logging, bring tensors to CPU and convert to numpy arrays.
+                    rgb_img = thermal_imgs[i].permute(1,2,0).detach().cpu().numpy()  # Using thermal image as a placeholder for RGB.
+                    thermal_img = rgb_img.copy()  # They are the same in this case.
+                    pred_depth_np = pred_depth_tensor.detach().cpu().numpy()
+                    gt_depth_np = gt_depth_resized.detach().cpu().numpy()
+                    log_sample_images(wandb, rgb_img, thermal_img, pred_depth_np, gt_depth_np, f"Epoch{epoch+1}_Step{global_step}")
             if B > 0:
                 loss_total = loss_total / B
                 loss_total.backward()
                 optimizer.step()
                 running_loss += loss_total.item()
+            
+            wandb.log({"batch_loss": loss_total.item(), "global_step": global_step})
         
         avg_loss = running_loss / len(train_loader)
         print(f"Epoch [{epoch+1}/{args.epochs}] Average Loss: {avg_loss:.4f}")
-
+        wandb.log({"epoch": epoch+1, "epoch_loss": avg_loss})
+    
     torch.save(model.state_dict(), args.output_model)
     print(f"Fine-tuned model saved to {args.output_model}")
+    wandb.save(args.output_model)
+    wandb.finish()
 
 if __name__ == "__main__":
     main()
