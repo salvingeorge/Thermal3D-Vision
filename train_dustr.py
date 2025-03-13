@@ -248,7 +248,18 @@ def main():
             avg_val_loss = val_loss / len(val_loader)
             print(f"Epoch [{epoch+1}/{args.epochs}] Average Validation Loss: {avg_val_loss:.4f}")
             wandb.log({"epoch": epoch+1, "val_loss": avg_val_loss})
-    
+            
+    checkpoint = {
+        "state_dict": model.state_dict(),
+        "args": {
+            "model": "ManyAR_PatchEmbed",  # This key is expected by the mast3r loader.
+            "learning_rate": args.lr,       # or a fixed value if not coming from args
+            "batch_size": args.batch_size,
+            "epochs": args.epochs,
+            # Add any additional hyperparameters as needed.
+        }
+    }
+
     torch.save(model.state_dict(), args.output_model)
     print(f"Fine-tuned model saved to {args.output_model}")
     wandb.save(args.output_model)
