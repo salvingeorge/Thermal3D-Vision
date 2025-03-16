@@ -30,23 +30,47 @@ def load_dustr_model(weights_path, device=None):
     # model = AsymmetricMASt3R.from_pretrained(weights_path, weights_only=True).to(device)
     from dust3r.model import AsymmetricCroCo3DStereo
     model = AsymmetricCroCo3DStereo(
-    output_mode='pts3d',
-    head_type='linear',
-    patch_size=16,
-    img_size=(224, 224),
-    landscape_only=False,
-    enc_embed_dim=1024,
-    enc_depth=24,
-    enc_num_heads=16,
-    mlp_ratio=4,
-    dec_embed_dim=768,
-    dec_depth=8,
-    dec_num_heads=12
-)
-    model.train()  # Set to training mode
-    # Ensure all parameters require gradients.
+        output_mode='pts3d',
+        head_type='linear',
+        patch_size=16,
+        img_size=(224, 224),
+        landscape_only=False,
+        enc_embed_dim=1024,
+        enc_depth=24,
+        enc_num_heads=16,
+        mlp_ratio=4,
+        dec_embed_dim=768,
+        dec_depth=8,
+        dec_num_heads=12
+    )
+     # Load state_dict from checkpoint
+    checkpoint = torch.load(weights_path, map_location=device)
+    if 'model' in checkpoint:
+        model.load_state_dict(checkpoint['model'], strict=False)
+    elif 'state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['state_dict'], strict=False)
+    else:
+        # Possibly it's just raw weights
+        model.load_state_dict(checkpoint, strict=False)
+    
+    model.to(device)
+    
+    import types
+    original_encode_image = model._encode_image
+
+    def patched_encode_image(self, image, true_shape=None):
+        x, pos = self.patch_embed(image, true_shape=true_shape)
+        for blk in self.enc_blocks:
+            x = blk(x, pos)
+        x = self.enc_norm(x)
+        return x, pos, None
+
+    model._encode_image = types.MethodType(patched_encode_image, model)
+    
+    model.train()  # for fine-tuning
     for param in model.parameters():
         param.requires_grad = True
+    
     return model
 
 def confidence_weighted_regression_loss(pred_pts1, pred_pts2, gt_pts1, gt_pts2, 
