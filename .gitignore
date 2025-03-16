@@ -174,4 +174,15 @@ psuedo_gt/
 /pseudo_gt/*
 freiburg_samples/
 wandb/*
-checkpoints/
+checkpoints/*
+pseudo_gt_data/
+/pseudo_gt_data/*
+thermal_evaluation_results/*
+evaluation_results/*
+results/
+.gitignore
+thermal_eval1/*
+outputs/*
+.gitignore
+
+visualized_pairs/*
