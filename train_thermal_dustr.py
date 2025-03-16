@@ -13,7 +13,7 @@ import types
 from types import SimpleNamespace
 
 
-# Import your dataset class.
+# Import dataset class.
 from data.dataset_loader import FreiburgDataset
 
 def load_dustr_model(weights_path, device=None):
