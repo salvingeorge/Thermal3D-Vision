@@ -277,6 +277,8 @@ def main():
     parser.add_argument("--device", type=str, default="cuda", help="Device: 'cuda' or 'cpu'")
     parser.add_argument("--log_interval", type=int, default=100, 
                         help="Interval (in steps) for logging sample images")
+    parser.add_argument("--accumulation_steps", type=int, default=4, 
+                    help="Number of batches to accumulate gradients over")
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -373,7 +375,8 @@ def main():
             gt_pointmap1 = gt_pointmap1[:actual_batch_size]
             gt_pointmap2 = gt_pointmap2[:actual_batch_size]
             
-            optimizer.zero_grad()
+            if batch_idx % args.accumulation_steps == 0:
+                optimizer.zero_grad()
             batch_loss = 0.0
             valid_samples = 0
             
@@ -534,10 +537,19 @@ def main():
             if valid_samples > 0:
                 # Average loss over valid samples
                 batch_loss = batch_loss / valid_samples
-                batch_loss.backward()
-                optimizer.step()
                 
-                running_loss += batch_loss.item()
+                # Scale the loss by accumulation steps to maintain gradient magnitude
+                batch_loss = batch_loss / args.accumulation_steps
+                batch_loss.backward()
+                
+                # Only update weights after accumulation_steps
+                if (batch_idx + 1) % args.accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
+                    optimizer.step()
+                    # Only zero gradients after an update
+                    if (batch_idx + 1) != len(train_loader):  # Don't zero at end of epoch
+                        optimizer.zero_grad()
+                
+                running_loss += batch_loss.item() * args.accumulation_steps  # Scale back for proper loss tracking
                 valid_batches += 1
                 
                 pbar.set_postfix({
