@@ -103,8 +103,7 @@ def enhanced_thermal_aware_loss(pred_pts1, pred_pts2, gt_pts1, gt_pts2,
                          alpha=0.2, edge_weight=0.5, smoothness_weight=0.3,
                          detail_weight=0.4, multi_scale=True):
     """
-    Enhanced loss function for thermal imagery with multi-scale processing, 
-    edge-awareness, smoothness, and detail preservation.
+    Enhanced loss function for thermal imagery, adapted for lower resolution (224×224)
     """
     # Basic confidence-weighted regression loss
     basic_loss = confidence_weighted_regression_loss(
@@ -130,8 +129,8 @@ def enhanced_thermal_aware_loss(pred_pts1, pred_pts2, gt_pts1, gt_pts2,
         gt_depth1 = gt_pts1[..., 2]
         gt_depth2 = gt_pts2[..., 2]
         
-        # Multi-scale processing
-        scales = [1, 2, 4] if multi_scale else [1]
+        # For 224×224, use smaller scales to avoid too much downsampling
+        scales = [1, 2] if multi_scale else [1]  # Removed scale=4 for lower resolution
         
         for scale in scales:
             # Downscale if using multi-scale
@@ -239,9 +238,9 @@ def enhanced_thermal_aware_loss(pred_pts1, pred_pts2, gt_pts1, gt_pts2,
             
             # Edge-aware weights (encourage depth edges to align with thermal edges)
             # Use a more numerically stable approach with clipping
-            thermal_factor = 10  # Controls sensitivity to thermal gradients
-            edge_weight1 = torch.exp(-torch.clamp(grad_thermal1_x, 0, 0.5) * thermal_factor) * \
-                          torch.exp(-torch.clamp(grad_thermal1_y, 0, 0.5) * thermal_factor)
+            thermal_factor = 15  # Controls sensitivity to thermal gradients,  Increased from 10 to be more sensitive at lower resolution
+            edge_weight1 = torch.exp(-torch.clamp(grad_thermal1_x, 0, 0.4) * thermal_factor) * \
+                          torch.exp(-torch.clamp(grad_thermal1_y, 0, 0.4) * thermal_factor)
             edge_weight2 = torch.exp(-torch.clamp(grad_thermal2_x, 0, 0.5) * thermal_factor) * \
                           torch.exp(-torch.clamp(grad_thermal2_y, 0, 0.5) * thermal_factor)
             
@@ -262,14 +261,17 @@ def enhanced_thermal_aware_loss(pred_pts1, pred_pts2, gt_pts1, gt_pts2,
             # Weight by scale (give more importance to finer scales)
             scale_weight = 1.0 / scale
             
+            if scale ==1:
+                scale_weight *= 1.5 # Put more emphasis on full resolution details
+            
             edge_loss += scale_weight * (scale_edge_loss1 + scale_edge_loss2)
             smoothness_loss += scale_weight * (scale_smoothness_loss1 + scale_smoothness_loss2)
             detail_loss += scale_weight * (scale_detail_loss1 + scale_detail_loss2)
     
     # Combine all losses
-    total_loss = basic_loss + edge_weight * edge_loss + smoothness_weight * smoothness_loss + detail_weight * detail_loss
+    total_loss = basic_loss + edge_weight * edge_loss + smoothness_weight * smoothness_loss + (detail_weight * 1.5) * detail_loss
     
-    # Return both the total loss and its components for logging
+     # Return both the total loss and its components for logging
     loss_components = {
         'basic_loss': basic_loss.item() if isinstance(basic_loss, torch.Tensor) else basic_loss,
         'edge_loss': edge_loss.item() if isinstance(edge_loss, torch.Tensor) else edge_loss,

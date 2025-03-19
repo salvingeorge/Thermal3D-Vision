@@ -5,7 +5,74 @@ import wandb
 import torch.nn.functional as F
 
 
-
+def visualize_predictions(thermal_img, pred_depth, gt_depth, save_path=None):
+    """
+    Visualize thermal image alongside predicted and ground truth depth maps.
+    
+    Args:
+        thermal_img: Thermal image tensor [C, H, W]
+        pred_depth: Predicted depth map tensor [H, W]
+        gt_depth: Ground truth depth map tensor [H, W]
+        save_path: Path to save the visualization (if None, image is displayed)
+    
+    Returns:
+        None (saves or displays the visualization)
+    """
+    import matplotlib.pyplot as plt
+    import torch
+    import numpy as np
+    
+    # Create figure with subplots
+    fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+    
+    # Convert tensors to numpy arrays for plotting
+    if isinstance(thermal_img, torch.Tensor):
+        # If image has multiple channels, take the first or average them
+        if thermal_img.dim() == 3 and thermal_img.shape[0] > 1:
+            thermal_np = thermal_img.detach().cpu().permute(1, 2, 0).numpy()
+        else:
+            thermal_np = thermal_img.detach().cpu().squeeze().numpy()
+            # If 1 channel, repeat to make it a 3-channel grayscale image
+            if thermal_np.ndim == 2:
+                thermal_np = np.stack([thermal_np] * 3, axis=2)
+    else:
+        thermal_np = thermal_img
+    
+    if isinstance(pred_depth, torch.Tensor):
+        pred_depth_np = pred_depth.detach().cpu().numpy()
+    else:
+        pred_depth_np = pred_depth
+        
+    if isinstance(gt_depth, torch.Tensor):
+        gt_depth_np = gt_depth.detach().cpu().numpy()
+    else:
+        gt_depth_np = gt_depth
+    
+    # Plot thermal image
+    axs[0].imshow(thermal_np)
+    axs[0].set_title('Thermal Image')
+    axs[0].axis('off')
+    
+    # Plot predicted depth map
+    pred_depth_vis = axs[1].imshow(pred_depth_np, cmap='plasma')
+    axs[1].set_title('Predicted Depth')
+    axs[1].axis('off')
+    fig.colorbar(pred_depth_vis, ax=axs[1], fraction=0.046, pad=0.04)
+    
+    # Plot ground truth depth map
+    gt_depth_vis = axs[2].imshow(gt_depth_np, cmap='plasma')
+    axs[2].set_title('Ground Truth Depth')
+    axs[2].axis('off')
+    fig.colorbar(gt_depth_vis, ax=axs[2], fraction=0.046, pad=0.04)
+    
+    plt.tight_layout()
+    
+    # Save or display the visualization
+    if save_path:
+        plt.savefig(save_path)
+        plt.close()
+    else:
+        plt.show()
 
 def log_sample_images_with_edges(wandb_run, thermal1, thermal2, pred_depth1, gt_depth1, sample_name):
     """Log a side-by-side visualization with edge detection"""

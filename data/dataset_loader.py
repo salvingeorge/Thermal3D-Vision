@@ -7,6 +7,9 @@ from torch.utils.data import Dataset, DataLoader
 import cv2
 from PIL import Image
 
+
+from utils.preprocessing import enhance_thermal_contrast
+
 class FreiburgDataset(Dataset):
     """Dataset for loading thermal image pairs with pseudo-GT for DUSt3R/MASt3R training."""
     
@@ -101,6 +104,21 @@ class FreiburgDataset(Dataset):
         
         thermal_img1 = self._load_thermal_image(thermal_path1)
         thermal_img2 = self._load_thermal_image(thermal_path2)
+        
+        # Apply contrast enhancement
+        if thermal_img1 is not None:
+            thermal_img1 = enhance_thermal_contrast(thermal_img1)
+        else:
+            print(f"Warning: Could not load thermal image from {thermal_path1}")
+            # Either return None for this sample or create a dummy tensor
+            return None
+        
+        if thermal_img2 is not None:
+            thermal_img2 = enhance_thermal_contrast(thermal_img2)
+        else:
+            print(f"Warning: Could not load thermal image from {thermal_path2}")
+            # Either return None for this sample or create a dummy tensor
+            return None
         
         if thermal_img1 is None or thermal_img2 is None:
             print(f"Warning: Could not read thermal files: {thermal_path1} or {thermal_path2}, skipping.")
