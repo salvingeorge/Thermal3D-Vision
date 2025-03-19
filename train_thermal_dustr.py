@@ -13,21 +13,25 @@ import types
 from types import SimpleNamespace
 
 
-# Import dataset class.
+from utils.loss import thermal_aware_loss
+from utils.visualize import log_sample_images_with_edges, log_sample_images
+
+
+# Import your dataset class.
 from data.dataset_loader import FreiburgDataset
 
 def load_dustr_model(weights_path, device=None):
+    """Load DUSt3R model checkpoint from a local file."""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Print the device to confirm it's using CUDA
-    print(f"Using device: {device}")
+    if not os.path.isfile(weights_path):
+        raise FileNotFoundError(f"Checkpoint not found at {weights_path}")
     
     mast3r_path = os.path.abspath("mast3r")
     if mast3r_path not in sys.path:
         sys.path.append(mast3r_path)
-    
-    # Load the model without patching methods
+    # from mast3r.model import AsymmetricMASt3R
+    # model = AsymmetricMASt3R.from_pretrained(weights_path, weights_only=True).to(device)
     from dust3r.model import AsymmetricCroCo3DStereo
     model = AsymmetricCroCo3DStereo(
         output_mode='pts3d',
@@ -43,20 +47,17 @@ def load_dustr_model(weights_path, device=None):
         dec_depth=8,
         dec_num_heads=12
     )
-    
-    # Load weights
+     # Load state_dict from checkpoint
     checkpoint = torch.load(weights_path, map_location=device)
-    
-    # Handle different checkpoint formats
     if 'model' in checkpoint:
         model.load_state_dict(checkpoint['model'], strict=False)
     elif 'state_dict' in checkpoint:
         model.load_state_dict(checkpoint['state_dict'], strict=False)
     else:
+        # Possibly it's just raw weights
         model.load_state_dict(checkpoint, strict=False)
     
-    # Move model to device
-    model = model.to(device)
+    model.to(device)
     
     import types
     original_encode_image = model._encode_image
@@ -70,164 +71,11 @@ def load_dustr_model(weights_path, device=None):
 
     model._encode_image = types.MethodType(patched_encode_image, model)
     
-    # Set to training mode
-    model.train()
-    
-    # Verify model is on the correct device
-    # print(f"Model device: {next(model.parameters()).device}")
+    model.train()  # for fine-tuning
+    for param in model.parameters():
+        param.requires_grad = True
     
     return model
-
-class CachedFreiburgDataset(FreiburgDataset):
-    """Dataset with caching for faster training."""
-    
-    def __init__(self, root_dir, sequences=None, transform=None, img_size=(224, 224), 
-             use_pseudo_gt=True, pseudo_gt_dir=None, frame_skip=1, use_cache=True):
-        # Remove use_cache before passing to parent
-        super().__init__(root_dir=root_dir, sequences=sequences, transform=transform,
-                        img_size=img_size, use_pseudo_gt=use_pseudo_gt, 
-                        pseudo_gt_dir=pseudo_gt_dir, frame_skip=frame_skip)
-        
-        # Initialize cache separately
-        self.cache = {}
-        self.use_cache = use_cache
-        
-    def __getitem__(self, idx):
-        if self.use_cache and idx in self.cache:
-            return self.cache[idx]
-        
-        # Get the sample using the parent class method
-        sample = super().__getitem__(idx)
-        
-        # Cache the sample for future use
-        if self.use_cache and sample is not None:
-            self.cache[idx] = sample
-            
-        return sample
-    
-def confidence_weighted_regression_loss(pred_pts1, pred_pts2, gt_pts1, gt_pts2, 
-                                       confidences1=None, confidences2=None, alpha=0.2):
-    """
-    Compute the confidence-weighted regression loss with proper dimension handling.
-    """
-    print(f"Shape check before processing:")
-    print(f"pred_pts1: {pred_pts1.shape}, gt_pts1: {gt_pts1.shape}")
-    print(f"pred_pts2: {pred_pts2.shape}, gt_pts2: {gt_pts2.shape}")
-    
-    # Handle batch dimension in predictions if present
-    if len(pred_pts1.shape) == 4:  # [B, H, W, 3]
-        # For simplicity, we'll just use the first element in the batch
-        pred_pts1 = pred_pts1[0]
-        pred_pts2 = pred_pts2[0]
-        print(f"Removed batch dimension: pred_pts1: {pred_pts1.shape}, pred_pts2: {pred_pts2.shape}")
-    
-    # Resize ground truth if dimensions don't match
-    if pred_pts1.shape[:-1] != gt_pts1.shape[:-1]:
-        print(f"Resizing ground truth to match prediction shape")
-        
-        # Get target dimensions
-        target_h, target_w = pred_pts1.shape[0], pred_pts1.shape[1]
-        
-        # Create temporary tensors for properly dimensioned interpolation
-        # Reshape from [H, W, 3] to [1, 3, H, W]
-        gt_pts1_temp = gt_pts1.permute(2, 0, 1).unsqueeze(0)
-        gt_pts2_temp = gt_pts2.permute(2, 0, 1).unsqueeze(0)
-        
-        print(f"Intermediate reshaped gt_pts1: {gt_pts1_temp.shape}")
-        
-        # Interpolate to target size
-        gt_pts1_resized = F.interpolate(
-            gt_pts1_temp, 
-            size=(target_h, target_w), 
-            mode='bilinear', 
-            align_corners=False
-        )
-        gt_pts2_resized = F.interpolate(
-            gt_pts2_temp, 
-            size=(target_h, target_w), 
-            mode='bilinear', 
-            align_corners=False
-        )
-        
-        print(f"After interpolation gt_pts1_resized: {gt_pts1_resized.shape}")
-        
-        # Convert back to [H, W, 3] format
-        gt_pts1 = gt_pts1_resized.squeeze(0).permute(1, 2, 0)
-        gt_pts2 = gt_pts2_resized.squeeze(0).permute(1, 2, 0)
-        
-        print(f"Final resized gt_pts1: {gt_pts1.shape}")
-    
-    print(f"Final shapes for loss calculation:")
-    print(f"pred_pts1: {pred_pts1.shape}, gt_pts1: {gt_pts1.shape}")
-    
-    # Ensure confidences have correct dimensions
-    if confidences1 is None:
-        confidences1 = torch.ones_like(pred_pts1[..., 0])  # [H, W]
-    if confidences2 is None:
-        confidences2 = torch.ones_like(pred_pts2[..., 0])  # [H, W]
-    
-    # Calculate L1 distance between predicted and ground truth pointmaps
-    loss1 = torch.abs(pred_pts1 - gt_pts1).mean(dim=-1)  # [H, W]
-    loss2 = torch.abs(pred_pts2 - gt_pts2).mean(dim=-1)  # [H, W]
-    
-    # Weight losses by confidence and add regularization term
-    weighted_loss1 = (confidences1 * loss1 - alpha * torch.log(confidences1)).mean()
-    weighted_loss2 = (confidences2 * loss2 - alpha * torch.log(confidences2)).mean()
-    
-    return weighted_loss1 + weighted_loss2
-
-def log_sample_images(wandb_run, thermal1, thermal2, pred_depth1, gt_depth1, sample_name):
-    """Log a side-by-side visualization using matplotlib and wandb."""
-    # Create a larger figure with proper spacing
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10), constrained_layout=True)
-    
-    # Convert tensors to numpy arrays for visualization
-    # Make sure to detach tensors that might require gradients
-    thermal1_np = thermal1.detach().cpu().numpy() if isinstance(thermal1, torch.Tensor) else thermal1
-    thermal2_np = thermal2.detach().cpu().numpy() if isinstance(thermal2, torch.Tensor) else thermal2
-    pred_depth1_np = pred_depth1.detach().cpu().numpy() if isinstance(pred_depth1, torch.Tensor) else pred_depth1
-    gt_depth1_np = gt_depth1.detach().cpu().numpy() if isinstance(gt_depth1, torch.Tensor) else gt_depth1
-    
-    # For image tensors in [C,H,W] format, convert to [H,W,C]
-    if isinstance(thermal1, torch.Tensor) and thermal1.dim() == 3 and thermal1.shape[0] == 3:
-        thermal1_np = thermal1_np.transpose(1, 2, 0)
-    if isinstance(thermal2, torch.Tensor) and thermal2.dim() == 3 and thermal2.shape[0] == 3:
-        thermal2_np = thermal2_np.transpose(1, 2, 0)
-    
-    # Display the images
-    axes[0, 0].imshow(thermal1_np)
-    axes[0, 0].set_title("Thermal Image 1")
-    axes[0, 0].axis("off")
-    
-    axes[0, 1].imshow(thermal2_np)
-    axes[0, 1].set_title("Thermal Image 2")
-    axes[0, 1].axis("off")
-    
-    # Use a consistent colormap for depth visualization
-    # Add small epsilon to avoid division by zero if min=max
-    vmin = min(np.min(pred_depth1_np), np.min(gt_depth1_np))
-    vmax = max(np.max(pred_depth1_np), np.max(gt_depth1_np))
-    if vmin == vmax:
-        vmin -= 0.1
-        vmax += 0.1
-    
-    im1 = axes[1, 0].imshow(pred_depth1_np, cmap="plasma", vmin=vmin, vmax=vmax)
-    axes[1, 0].set_title("Predicted Depth 1")
-    axes[1, 0].axis("off")
-    
-    axes[1, 1].imshow(gt_depth1_np, cmap="plasma", vmin=vmin, vmax=vmax)
-    axes[1, 1].set_title("GT Depth 1")
-    axes[1, 1].axis("off")
-    
-    # Add colorbar with proper positioning
-    cbar = fig.colorbar(im1, ax=axes.ravel().tolist(), shrink=0.6, pad=0.02)
-    cbar.set_label('Depth')
-    
-    # Use constrained_layout instead of tight_layout
-    # plt.tight_layout() - removed this line
-    
-    wandb_run.log({sample_name: wandb.Image(fig)})
-    plt.close(fig)
     
 def skip_none_collate(batch):
     """Custom collate function to filter out None samples and handle None fields."""
@@ -277,8 +125,14 @@ def main():
     parser.add_argument("--device", type=str, default="cuda", help="Device: 'cuda' or 'cpu'")
     parser.add_argument("--log_interval", type=int, default=100, 
                         help="Interval (in steps) for logging sample images")
-    parser.add_argument("--accumulation_steps", type=int, default=4, 
-                    help="Number of batches to accumulate gradients over")
+    parser.add_argument("--use_thermal_aware_loss", action="store_true", 
+                    help="Use thermal-aware loss with edge and smoothness terms")
+    parser.add_argument("--edge_weight", type=float, default=0.5, 
+                        help="Weight for edge-aware term in thermal-aware loss")
+    parser.add_argument("--smoothness_weight", type=float, default=0.3, 
+                        help="Weight for smoothness term in thermal-aware loss")
+    parser.add_argument("--accumulation_steps", type=int, default=1, 
+                        help="Number of batches to accumulate gradients over")
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -289,23 +143,15 @@ def main():
                name=f"DUSt3R_thermal_ft_ep{args.epochs}_bs{args.batch_size}_lr{args.lr}")
 
     # Create dataset
-    # dataset = FreiburgDataset(
-    #     root_dir=args.dataset_dir,
-    #     sequences=None,  # Use all available sequences
-    #     img_size=tuple(args.img_size),
-    #     use_pseudo_gt=True,
-    #     pseudo_gt_dir=args.pseudo_gt_dir,
-    #     frame_skip=args.frame_skip
-    # )
-    dataset = CachedFreiburgDataset(
+    dataset = FreiburgDataset(
         root_dir=args.dataset_dir,
-        sequences=None,
+        sequences=None,  # Use all available sequences
         img_size=tuple(args.img_size),
         use_pseudo_gt=True,
         pseudo_gt_dir=args.pseudo_gt_dir,
-        frame_skip=args.frame_skip,
-        use_cache=True
+        frame_skip=args.frame_skip
     )
+    
     # Split into train and validation
     split_ratio = 0.8
     train_size = int(len(dataset) * split_ratio)
@@ -313,9 +159,9 @@ def main():
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
     
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
-                             num_workers=2, collate_fn=skip_none_collate, pin_memory=True, prefetch_factor=2, persistent_workers=True)
+                             num_workers=4, collate_fn=skip_none_collate)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
-                           num_workers=2, collate_fn=skip_none_collate, pin_memory=True, prefetch_factor=2, persistent_workers=True)
+                           num_workers=4, collate_fn=skip_none_collate)
 
     # Load the DUSt3R model
     model = load_dustr_model(args.weights, device)
@@ -375,31 +221,19 @@ def main():
             gt_pointmap1 = gt_pointmap1[:actual_batch_size]
             gt_pointmap2 = gt_pointmap2[:actual_batch_size]
             
-            if batch_idx % args.accumulation_steps == 0:
-                optimizer.zero_grad()
+            optimizer.zero_grad()
             batch_loss = 0.0
             valid_samples = 0
             
             # Process each sample in the batch individually to handle errors
             for i in range(actual_batch_size):
                 try:
-                    # Debug device placement
-                    # print(f"thermal1 device: {thermal1[i:i+1].device}")
-                    # print(f"model device: {next(model.parameters()).device}")
                     # Prepare inputs for the model
-                    # view1 = {"img": thermal1[i:i+1], "instance": []}
-                    # view2 = {"img": thermal2[i:i+1], "instance": []}
-                    view1 = {"img": thermal1, "instance": []}
-                    view2 = {"img": thermal2, "instance": []}
+                    view1 = {"img": thermal1[i:i+1], "instance": []}
+                    view2 = {"img": thermal2[i:i+1], "instance": []}
                     
-                    # Forward pass
-                    torch.cuda.synchronize()
-    
                     # Forward pass
                     output = model(view1, view2)
-                    
-                    # Force synchronization again
-                    torch.cuda.synchronize()
                     
                     # Extract predictions
                     if isinstance(output, tuple):
@@ -482,49 +316,79 @@ def main():
                                 mode='bilinear', align_corners=False
                             )
                             curr_conf2 = conf2_resized.squeeze(0).squeeze(0)  # [H, W]
-                    
-                    # Calculate loss (L1 distance between prediction and ground truth)
-                    loss1 = torch.abs(pred_pointmap1 - curr_gt_pointmap1).mean(dim=-1)  # [H, W]
-                    loss2 = torch.abs(pred_pointmap2 - curr_gt_pointmap2).mean(dim=-1)  # [H, W]
-                    
-                    # Apply confidence weighting
-                    alpha = 0.2  # Confidence regularization parameter
-                    
-                    # Use predicted confidence if available, else use GT confidence, else use all ones
-                    conf1 = pred_conf1 if pred_conf1 is not None else curr_conf1 if curr_conf1 is not None else torch.ones_like(loss1)
-                    conf2 = pred_conf2 if pred_conf2 is not None else curr_conf2 if curr_conf2 is not None else torch.ones_like(loss2)
-                    
+                            
+                    # Use predicted confidence if available, else use GT confidence, else use ones
+                    conf1 = pred_conf1 if pred_conf1 is not None else curr_conf1 if curr_conf1 is not None else torch.ones_like(pred_pointmap1[..., 0])
+                    conf2 = pred_conf2 if pred_conf2 is not None else curr_conf2 if curr_conf2 is not None else torch.ones_like(pred_pointmap2[..., 0])
+
                     # Ensure confidence is strictly positive (for log stability)
                     conf1 = torch.clamp(conf1, min=1e-5)
                     conf2 = torch.clamp(conf2, min=1e-5)
                     
-                    # Calculate weighted loss with regularization
-                    weighted_loss1 = (conf1 * loss1 - alpha * torch.log(conf1)).mean()
-                    weighted_loss2 = (conf2 * loss2 - alpha * torch.log(conf2)).mean()
-                    
-                    # Total loss
-                    loss = weighted_loss1 + weighted_loss2
+                    if args.use_thermal_aware_loss:
+                        # Use the thermal-aware loss function
+                        loss, loss_components = thermal_aware_loss(
+                            pred_pointmap1, pred_pointmap2,
+                            curr_gt_pointmap1, curr_gt_pointmap2,
+                            confidences1=conf1, confidences2=conf2,
+                            thermal_img1=thermal1[i], thermal_img2=thermal2[i],
+                            alpha=0.2,
+                            edge_weight=args.edge_weight,
+                            smoothness_weight=args.smoothness_weight
+                        )
+                        
+                        # Log individual loss components if desired
+                        if valid_samples == 0 and i == 0:  # Log for first sample in batch
+                            wandb.log({
+                                'basic_loss': loss_components['basic_loss'],
+                                'edge_loss': loss_components['edge_loss'] * args.edge_weight,
+                                'smoothness_loss': loss_components['smoothness_loss'] * args.smoothness_weight,
+                                'global_step': global_step
+                            })
+                    else:
+                        # Original loss calculation
+                        loss1 = torch.abs(pred_pointmap1 - curr_gt_pointmap1).mean(dim=-1)  # [H, W]
+                        loss2 = torch.abs(pred_pointmap2 - curr_gt_pointmap2).mean(dim=-1)  # [H, W]
+                        
+                        # Apply confidence weighting
+                        alpha = 0.2  # Confidence regularization parameter
+                        
+                        # Calculate weighted loss with regularization
+                        weighted_loss1 = (conf1 * loss1 - alpha * torch.log(conf1)).mean()
+                        weighted_loss2 = (conf2 * loss2 - alpha * torch.log(conf2)).mean()
+                        
+                        # Total loss
+                        loss = weighted_loss1 + weighted_loss2
                     
                     # Check if loss is valid
                     if torch.isfinite(loss) and loss > 0:
                         batch_loss += loss
                         valid_samples += 1
                         
-                        # Log sample images occasionally
+                        # Log sample images occasionally 
                         if global_step % args.log_interval == 0 and i == 0:
                             # Extract depth map from pointmap (Z-coordinate)
-                            pred_depth1 = pred_pointmap1[:, :, 2].detach()  # Add detach() here for safety
-                            gt_depth1 = curr_gt_pointmap1[:, :, 2].detach()  # Add detach() here for safety
+                            pred_depth1 = pred_pointmap1[:, :, 2].detach()
+                            gt_depth1 = curr_gt_pointmap1[:, :, 2].detach()
                             
-                            log_sample_images(
-                                wandb, 
-                                thermal1[i], 
-                                thermal2[i],
-                                pred_depth1, 
-                                gt_depth1, 
-                                f"sample_ep{epoch+1}_step{global_step}"
-                            )
-                    
+                            if args.use_thermal_aware_loss:
+                                log_sample_images_with_edges(
+                                    wandb, 
+                                    thermal1[i], 
+                                    thermal2[i],
+                                    pred_depth1, 
+                                    gt_depth1, 
+                                    f"sample_ep{epoch+1}_step{global_step}"
+                                )
+                            else:
+                                log_sample_images(
+                                    wandb, 
+                                    thermal1[i], 
+                                    thermal2[i],
+                                    pred_depth1, 
+                                    gt_depth1, 
+                                    f"sample_ep{epoch+1}_step{global_step}"
+                                )
                 except Exception as e:
                     print(f"Error processing sample {i}: {e}")
                     import traceback
@@ -537,19 +401,10 @@ def main():
             if valid_samples > 0:
                 # Average loss over valid samples
                 batch_loss = batch_loss / valid_samples
-                
-                # Scale the loss by accumulation steps to maintain gradient magnitude
-                batch_loss = batch_loss / args.accumulation_steps
                 batch_loss.backward()
+                optimizer.step()
                 
-                # Only update weights after accumulation_steps
-                if (batch_idx + 1) % args.accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
-                    optimizer.step()
-                    # Only zero gradients after an update
-                    if (batch_idx + 1) != len(train_loader):  # Don't zero at end of epoch
-                        optimizer.zero_grad()
-                
-                running_loss += batch_loss.item() * args.accumulation_steps  # Scale back for proper loss tracking
+                running_loss += batch_loss.item()
                 valid_batches += 1
                 
                 pbar.set_postfix({

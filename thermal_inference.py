@@ -11,6 +11,9 @@ from tqdm import tqdm
 import cv2
 from pathlib import Path
 import types
+import time
+from datetime import datetime
+from matplotlib.colors import LinearSegmentedColormap
 
 def load_model(checkpoint_path, device=None):
     """Load the fine-tuned DUSt3R model from checkpoint."""
@@ -20,10 +23,15 @@ def load_model(checkpoint_path, device=None):
     print(f"Loading model from {checkpoint_path}")
     
     # Import the DUSt3R model class
-    dust3r_path = os.path.join(os.path.expanduser("~"), "georges1/dust3r")
+    dust3r_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dust3r")
     if dust3r_path not in sys.path:
         sys.path.append(dust3r_path)
-    from dust3r.model import AsymmetricCroCo3DStereo
+    
+    try:
+        from dust3r.model import AsymmetricCroCo3DStereo
+    except ImportError:
+        print(f"Error importing DUSt3R. Make sure the dust3r package is in {dust3r_path}")
+        sys.exit(1)
     
     # Initialize with the correct dimensions for your model
     model = AsymmetricCroCo3DStereo(
@@ -44,7 +52,7 @@ def load_model(checkpoint_path, device=None):
     # Patch the model's _encode_image method to bypass the assertion error
     original_encode_image = model._encode_image
     
-    def patched_encode_image(self, image, true_shape):
+    def patched_encode_image(self, image, true_shape=None):
         # Skip the problematic assertion
         # embed the image into patches
         x, pos = self.patch_embed(image, true_shape=true_shape)
@@ -65,6 +73,8 @@ def load_model(checkpoint_path, device=None):
     # Load state dict
     if 'state_dict' in checkpoint:
         model.load_state_dict(checkpoint['state_dict'], strict=False)
+    elif 'model' in checkpoint:
+        model.load_state_dict(checkpoint['model'], strict=False)
     else:
         model.load_state_dict(checkpoint, strict=False)
     
@@ -179,6 +189,12 @@ def process_image_pair(model, img1_path, img2_path=None, img_size=(224, 224), mo
     if confidence1 is not None:
         confidence1 = confidence1.detach().cpu()
         confidence2 = confidence2.detach().cpu()
+        if len(confidence1.shape) == 3:  # [B, H, W]
+            confidence1 = confidence1[0].numpy()
+            confidence2 = confidence2[0].numpy()
+        else:
+            confidence1 = confidence1.numpy()
+            confidence2 = confidence2.numpy()
     
     # Return results
     return {
@@ -192,63 +208,82 @@ def process_image_pair(model, img1_path, img2_path=None, img_size=(224, 224), mo
 
 def visualize_results(img_path, results, output_path=None):
     """
-    Visualize inference results.
+    Visualize inference results with exactly matching colors and layout to the example.
     
     Args:
         img_path: Path to the input image
         results: Dictionary of results from process_image_pair
         output_path: Path to save visualization
     """
-    # Load original image for display
-    img = cv2.imread(img_path)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    # Load original thermal image
+    thermal_img = cv2.imread(img_path, cv2.IMREAD_ANYDEPTH)
+    
+    # Handle different image types
+    if thermal_img is None:
+        thermal_img = cv2.imread(img_path)
+        if thermal_img is None:
+            print(f"Error: Could not read image {img_path}")
+            return
+        thermal_img = cv2.cvtColor(thermal_img, cv2.COLOR_BGR2RGB)
+    
+    # Normalize based on bit depth
+    if thermal_img.dtype == np.uint16:
+        thermal_img = thermal_img.astype(np.float32) / 65535.0
+    else:
+        thermal_img = thermal_img.astype(np.float32) / 255.0
     
     # Create figure with subplots
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
     
-    # Plot original image
-    axes[0].imshow(img)
-    axes[0].set_title("Thermal Image")
+    # Convert RGB to grayscale if needed
+    if len(thermal_img.shape) == 3 and thermal_img.shape[2] == 3:
+        thermal_gray = np.mean(thermal_img, axis=2)
+    else:
+        thermal_gray = thermal_img
+    
+    # For the thermal image, use a specific "inferno" colormap to get the desired yellow look
+    thermal_vis = axes[0].imshow(thermal_gray, cmap="inferno")
+    axes[0].set_title("Thermal Image (Heatmap)")
     axes[0].axis("off")
+    fig.colorbar(thermal_vis, ax=axes[0], fraction=0.046, pad=0.04)
     
-    # Plot depth map
+    # For the depth image, use plasma as it appears in your example
     depth_vis = axes[1].imshow(results["depth1"], cmap="plasma")
     axes[1].set_title("Predicted Depth")
     axes[1].axis("off")
     fig.colorbar(depth_vis, ax=axes[1], fraction=0.046, pad=0.04)
     
-    # Plot confidence if available
-    if results["confidence1"] is not None:
-        # Fix confidence shape if needed
-        confidence_map = results["confidence1"]
-        if len(confidence_map.shape) == 3:
-            # Take the first element if we have a batch dimension
-            if confidence_map.shape[0] == 2:
-                # This might be (2, H, W) format - just take first channel
-                confidence_map = confidence_map[0]
-            elif confidence_map.shape[2] == 1:
-                # This might be (H, W, 1) format
-                confidence_map = confidence_map[:, :, 0]
-        
-        conf_vis = axes[2].imshow(confidence_map, cmap="viridis")
-        axes[2].set_title("Confidence")
-        axes[2].axis("off")
-        fig.colorbar(conf_vis, ax=axes[2], fraction=0.046, pad=0.04)
-    else:
-        # If no confidence, plot pointcloud colored by depth
-        axes[2].imshow(results["pointmap1"][:,:,2], cmap="viridis")
-        axes[2].set_title("Z Coordinate")
-        axes[2].axis("off")
-        fig.colorbar(depth_vis, ax=axes[2], fraction=0.046, pad=0.04)
-    
     plt.tight_layout()
     
-    # Save or display
+    # Add timestamp to the figure
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    plt.figtext(0.5, 0.01, f"Generated: {timestamp}", ha="center", fontsize=9)
+    
+    plt.tight_layout(rect=[0, 0.03, 1, 1])  # Adjust layout to make room for timestamp
+    
+    # Save with timestamp in filename if output path is provided
     if output_path:
-        plt.savefig(output_path)
+        # Get directory and basename from output_path
+        output_dir = os.path.dirname(output_path)
+        basename = os.path.splitext(os.path.basename(output_path))[0]
+        
+        # Add timestamp to filename
+        timestamp_filename = f"{basename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        final_path = os.path.join(output_dir, timestamp_filename)
+        
+        plt.savefig(final_path)
         plt.close(fig)
+        
+        # Also save the depth map as numpy array with timestamp
+        depth_filename = f"{basename}_depth_{datetime.now().strftime('%Y%m%d_%H%M%S')}.npy"
+        depth_path = os.path.join(output_dir, depth_filename)
+        np.save(depth_path, results["depth1"])
+        
+        # Return the paths of saved files
+        return final_path, depth_path
     else:
         plt.show()
+        return None
 
 def main():
     parser = argparse.ArgumentParser(description="Run inference with fine-tuned DUSt3R model")
