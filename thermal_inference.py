@@ -303,6 +303,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(args.checkpoint, device)
     
+    
     # Check if input is a directory or a single image
     if os.path.isdir(args.input):
         # Process all images in directory

@@ -5,14 +5,14 @@ import wandb
 import torch.nn.functional as F
 
 
-def visualize_predictions(thermal_img, pred_depth, gt_depth, save_path=None):
+def visualize_predictions(thermal_img, pred_depth, gt_depth=None, save_path=None):
     """
-    Visualize thermal image alongside predicted and ground truth depth maps.
+    Visualize thermal image alongside predicted depth map (and optionally ground truth if available).
     
     Args:
         thermal_img: Thermal image tensor [C, H, W]
         pred_depth: Predicted depth map tensor [H, W]
-        gt_depth: Ground truth depth map tensor [H, W]
+        gt_depth: Ground truth depth map tensor [H, W] or None for inference
         save_path: Path to save the visualization (if None, image is displayed)
     
     Returns:
@@ -22,8 +22,9 @@ def visualize_predictions(thermal_img, pred_depth, gt_depth, save_path=None):
     import torch
     import numpy as np
     
-    # Create figure with subplots
-    fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+    # Determine number of subplots (2 if no ground truth, 3 otherwise)
+    n_plots = 3 if gt_depth is not None else 2
+    fig, axs = plt.subplots(1, n_plots, figsize=(5*n_plots, 5))
     
     # Convert tensors to numpy arrays for plotting
     if isinstance(thermal_img, torch.Tensor):
@@ -42,11 +43,6 @@ def visualize_predictions(thermal_img, pred_depth, gt_depth, save_path=None):
         pred_depth_np = pred_depth.detach().cpu().numpy()
     else:
         pred_depth_np = pred_depth
-        
-    if isinstance(gt_depth, torch.Tensor):
-        gt_depth_np = gt_depth.detach().cpu().numpy()
-    else:
-        gt_depth_np = gt_depth
     
     # Plot thermal image
     axs[0].imshow(thermal_np)
@@ -59,18 +55,24 @@ def visualize_predictions(thermal_img, pred_depth, gt_depth, save_path=None):
     axs[1].axis('off')
     fig.colorbar(pred_depth_vis, ax=axs[1], fraction=0.046, pad=0.04)
     
-    # Plot ground truth depth map
-    gt_depth_vis = axs[2].imshow(gt_depth_np, cmap='plasma')
-    axs[2].set_title('Ground Truth Depth')
-    axs[2].axis('off')
-    fig.colorbar(gt_depth_vis, ax=axs[2], fraction=0.046, pad=0.04)
+    # Plot ground truth depth map if provided
+    if gt_depth is not None:
+        if isinstance(gt_depth, torch.Tensor):
+            gt_depth_np = gt_depth.detach().cpu().numpy()
+        else:
+            gt_depth_np = gt_depth
+        
+        gt_depth_vis = axs[2].imshow(gt_depth_np, cmap='plasma')
+        axs[2].set_title('Ground Truth Depth')
+        axs[2].axis('off')
+        fig.colorbar(gt_depth_vis, ax=axs[2], fraction=0.046, pad=0.04)
     
     plt.tight_layout()
     
     # Save or display the visualization
     if save_path:
         plt.savefig(save_path)
-        plt.close()
+        plt.close(fig)
     else:
         plt.show()
 

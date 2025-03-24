@@ -101,7 +101,7 @@ def enhanced_thermal_aware_loss(pred_pts1, pred_pts2, gt_pts1, gt_pts2,
                          confidences1=None, confidences2=None, 
                          thermal_img1=None, thermal_img2=None,
                          alpha=0.2, edge_weight=0.5, smoothness_weight=0.3,
-                         detail_weight=0.4, multi_scale=True):
+                         detail_weight=0.3, multi_scale=True):
     """
     Enhanced loss function for thermal imagery, adapted for lower resolution (224×224)
     """
@@ -236,42 +236,65 @@ def enhanced_thermal_aware_loss(pred_pts1, pred_pts2, gt_pts1, gt_pts2,
                 if gt_depth2_scaled.shape[0] > 1:
                     grad_gt_depth2_y[:-1, :] = torch.abs(gt_depth2_scaled[1:, :] - gt_depth2_scaled[:-1, :])
             
-            # Edge-aware weights (encourage depth edges to align with thermal edges)
-            # Use a more numerically stable approach with clipping
-            thermal_factor = 15  # Controls sensitivity to thermal gradients,  Increased from 10 to be more sensitive at lower resolution
-            edge_weight1 = torch.exp(-torch.clamp(grad_thermal1_x, 0, 0.4) * thermal_factor) * \
-                          torch.exp(-torch.clamp(grad_thermal1_y, 0, 0.4) * thermal_factor)
-            edge_weight2 = torch.exp(-torch.clamp(grad_thermal2_x, 0, 0.5) * thermal_factor) * \
-                          torch.exp(-torch.clamp(grad_thermal2_y, 0, 0.5) * thermal_factor)
+            # Normalize thermal gradients for better stability
+            eps = 1e-5
+            grad_thermal1_x_mean = torch.mean(grad_thermal1_x) + eps
+            grad_thermal1_y_mean = torch.mean(grad_thermal1_y) + eps
+            grad_thermal2_x_mean = torch.mean(grad_thermal2_x) + eps
+            grad_thermal2_y_mean = torch.mean(grad_thermal2_y) + eps
+            
+            grad_thermal1_x_norm = grad_thermal1_x / grad_thermal1_x_mean
+            grad_thermal1_y_norm = grad_thermal1_y / grad_thermal1_y_mean
+            grad_thermal2_x_norm = grad_thermal2_x / grad_thermal2_x_mean
+            grad_thermal2_y_norm = grad_thermal2_y / grad_thermal2_y_mean
+            
+            # Edge-aware weights with better thermal edge detection sensitivity
+            thermal_factor = 8.0  # Lower value to be more sensitive to thermal gradients
+            edge_weight1 = torch.exp(-torch.clamp(grad_thermal1_x_norm, 0, 0.4) * thermal_factor) * \
+                          torch.exp(-torch.clamp(grad_thermal1_y_norm, 0, 0.4) * thermal_factor)
+            edge_weight2 = torch.exp(-torch.clamp(grad_thermal2_x_norm, 0, 0.5) * thermal_factor) * \
+                          torch.exp(-torch.clamp(grad_thermal2_y_norm, 0, 0.5) * thermal_factor)
             
             # Edge-aware loss component
             scale_edge_loss1 = torch.mean(grad_depth1_x * (1 - edge_weight1)) + torch.mean(grad_depth1_y * (1 - edge_weight1))
             scale_edge_loss2 = torch.mean(grad_depth2_x * (1 - edge_weight2)) + torch.mean(grad_depth2_y * (1 - edge_weight2))
             
-            # Smoothness loss (encourage smoothness in homogeneous regions)
-            scale_smoothness_loss1 = torch.mean(grad_depth1_x * edge_weight1) + torch.mean(grad_depth1_y * edge_weight1)
-            scale_smoothness_loss2 = torch.mean(grad_depth2_x * edge_weight2) + torch.mean(grad_depth2_y * edge_weight2)
+            # Modified smoothness loss - use squared depth gradients for stronger penalty
+            scale_smoothness_loss1 = torch.mean(grad_depth1_x.pow(2) * edge_weight1) + torch.mean(grad_depth1_y.pow(2) * edge_weight1)
+            scale_smoothness_loss2 = torch.mean(grad_depth2_x.pow(2) * edge_weight2) + torch.mean(grad_depth2_y.pow(2) * edge_weight2)
             
-            # Detail preservation loss (match the gradient patterns of ground truth)
-            scale_detail_loss1 = torch.mean(torch.abs(grad_depth1_x - grad_gt_depth1_x)) + \
-                               torch.mean(torch.abs(grad_depth1_y - grad_gt_depth1_y))
-            scale_detail_loss2 = torch.mean(torch.abs(grad_depth2_x - grad_gt_depth2_x)) + \
-                               torch.mean(torch.abs(grad_depth2_y - grad_gt_depth2_y))
+            # Detail preservation loss with Huber loss for robustness
+            huber_delta = 0.1
+            diff_x1 = torch.abs(grad_depth1_x - grad_gt_depth1_x)
+            diff_y1 = torch.abs(grad_depth1_y - grad_gt_depth1_y)
+            diff_x2 = torch.abs(grad_depth2_x - grad_gt_depth2_x)
+            diff_y2 = torch.abs(grad_depth2_y - grad_gt_depth2_y)
             
-            # Weight by scale (give more importance to finer scales)
-            scale_weight = 1.0 / scale
+            # Apply Huber loss
+            scale_detail_loss1 = torch.mean(torch.where(diff_x1 < huber_delta, 
+                                                       0.5 * diff_x1.pow(2), 
+                                                       huber_delta * (diff_x1 - 0.5 * huber_delta))) + \
+                                torch.mean(torch.where(diff_y1 < huber_delta, 
+                                                     0.5 * diff_y1.pow(2), 
+                                                     huber_delta * (diff_y1 - 0.5 * huber_delta)))
+            scale_detail_loss2 = torch.mean(torch.where(diff_x2 < huber_delta, 
+                                                       0.5 * diff_x2.pow(2), 
+                                                       huber_delta * (diff_x2 - 0.5 * huber_delta))) + \
+                                torch.mean(torch.where(diff_y2 < huber_delta, 
+                                                     0.5 * diff_y2.pow(2), 
+                                                     huber_delta * (diff_y2 - 0.5 * huber_delta)))
             
-            if scale ==1:
-                scale_weight *= 1.5 # Put more emphasis on full resolution details
+            # More balanced scale weighting
+            scale_weight = 1.0 if scale == 1 else 0.7/scale
             
             edge_loss += scale_weight * (scale_edge_loss1 + scale_edge_loss2)
             smoothness_loss += scale_weight * (scale_smoothness_loss1 + scale_smoothness_loss2)
             detail_loss += scale_weight * (scale_detail_loss1 + scale_detail_loss2)
     
-    # Combine all losses
-    total_loss = basic_loss + edge_weight * edge_loss + smoothness_weight * smoothness_loss + (detail_weight * 1.5) * detail_loss
+    # Combine all losses with reduced weights for thermal-specific terms
+    total_loss = basic_loss + edge_weight * edge_loss + smoothness_weight * smoothness_loss + detail_weight * detail_loss
     
-     # Return both the total loss and its components for logging
+    # Return both the total loss and its components for logging
     loss_components = {
         'basic_loss': basic_loss.item() if isinstance(basic_loss, torch.Tensor) else basic_loss,
         'edge_loss': edge_loss.item() if isinstance(edge_loss, torch.Tensor) else edge_loss,

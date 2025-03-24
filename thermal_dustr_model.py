@@ -163,9 +163,32 @@ class ThermalDUSt3R(nn.Module):
     
     @classmethod
     def from_pretrained(cls, weights_path, device=None):
-        """Load model from pretrained weights"""
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Load the checkpoint
+        checkpoint = torch.load(weights_path, map_location=device)
+        if 'state_dict' in checkpoint:
+            state = checkpoint['state_dict']
+        elif 'model' in checkpoint:
+            state = checkpoint['model']
+        else:
+            state = checkpoint
+        # Load the base model (this loads only the DUSt3R part)
         base_model = load_dustr_model(weights_path, device, is_thermal=True)
-        return cls(base_model)
+        # Wrap the base model with ThermalDUSt3R
+        model_wrapper = cls(base_model)
+        # Prepare a new state dict that maps the saved keys to our wrapper's keys.
+        # For instance, if keys in the checkpoint are prefixed with "model.", remove that prefix.
+        new_state = {}
+        for key, value in state.items():
+            if key.startswith("model."):
+                new_state[key[len("model."):]] = value
+            else:
+                new_state[key] = value
+        # Load the complete state dict into the wrapper (non-strict to allow mismatches)
+        model_wrapper.load_state_dict(new_state, strict=False)
+        return model_wrapper
+
     
     def save_checkpoint(self, path, optimizer=None, epoch=None, val_loss=None, args=None):
         """Save model checkpoint"""
@@ -177,3 +200,32 @@ class ThermalDUSt3R(nn.Module):
             "args": args
         }
         torch.save(checkpoint, path)
+
+# class ThermalDUSt3R(nn.Module):
+#     """
+#     Simplified wrapper class for DUSt3R model without thermal-specific modifications
+#     """
+#     def __init__(self, base_model):
+#         super(ThermalDUSt3R, self).__init__()
+#         self.model = base_model
+    
+#     def forward(self, view1, view2):
+#         # Simply pass inputs directly to the base model without any preprocessing
+#         return self.model(view1, view2)
+    
+#     @classmethod
+#     def from_pretrained(cls, weights_path, device=None):
+#         """Load model from pretrained weights"""
+#         base_model = load_dustr_model(weights_path, device, is_thermal=False)
+#         return cls(base_model)
+    
+#     def save_checkpoint(self, path, optimizer=None, epoch=None, val_loss=None, args=None):
+#         """Save model checkpoint"""
+#         checkpoint = {
+#             "epoch": epoch,
+#             "state_dict": self.state_dict(),
+#             "optimizer": optimizer.state_dict() if optimizer is not None else None,
+#             "val_loss": val_loss,
+#             "args": args
+#         }
+#         torch.save(checkpoint, path)
