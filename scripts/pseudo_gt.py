@@ -37,7 +37,7 @@ def skip_none_collate(batch):
     """Custom collate function that filters out any None samples."""
     batch = [x for x in batch if x is not None]
     if len(batch) == 0:
-        return None  # or you can raise an exception
+        return None 
     return default_collate(batch)
 
 def flatten_tensor(x):
@@ -627,12 +627,6 @@ def main():
     # Load model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = load_mast3r_model(args.weights, device)
-    
-    print(f"ERROR: No valid image pairs found in the dataset directory: {args.dataset_dir}")
-    print("Please check the directory structure and ensure RGB images exist.")
-
-    
-    # Need to import glob here (was missing in the imports)
 
     
     try:

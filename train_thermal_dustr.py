@@ -156,7 +156,6 @@ def main():
             actual_batch_size = min(thermal1.size(0), thermal2.size(0), 
                                    gt_pointmap1.size(0), gt_pointmap2.size(0))
             
-            # If we have confidence maps, use them
             if "confidence1" in batch and batch["confidence1"] is not None:
                 confidence1 = batch["confidence1"].to(device)
                 confidence1 = confidence1[:actual_batch_size] if confidence1.size(0) > actual_batch_size else confidence1
@@ -280,7 +279,7 @@ def main():
                     conf2 = torch.clamp(conf2, min=1e-5)
                     
                     if args.use_thermal_aware_loss:
-                        # Use the enhanced thermal-aware loss function
+                        
                         loss, loss_components = enhanced_thermal_aware_loss(
                             pred_pointmap1, pred_pointmap2,
                             curr_gt_pointmap1, curr_gt_pointmap2,
