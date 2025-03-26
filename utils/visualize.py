@@ -364,12 +364,12 @@ def visualize_ir_standalone(ir_img, min_val=21800, max_val=23700, viz = False):
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         # Show original image
         axes[0].imshow(original_img, cmap='gray')
-        axes[0].set_title('Original with black borders')
+        axes[0].set_title('Original')
         axes[0].axis('off')
         
         # Show processed image
         axes[1].imshow(ir_img_color)
-        axes[1].set_title('Processed without black borders')
+        axes[1].set_title('Processed')
         axes[1].axis('off')
         
         plt.tight_layout()
