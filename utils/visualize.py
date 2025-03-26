@@ -230,7 +230,6 @@ def log_sample_images(wandb_run, thermal1, thermal2, pred_depth1, gt_depth1, sam
     plt.close(fig)
     
     
-sys.path.append('/home/user/georges1/Thermal3D-Vision')
 
 from utils.preprocessing import enhance_thermal_contrast
 
@@ -692,3 +691,125 @@ def visualize_dataset(dataset_path, num_samples=5):
             sample_count += 1
             
     # print(f"\nSaved {sample_count} samples to freiburg_samples/ directory")
+
+
+def plot_point_cloud_merged(ax, pointmap, color_mode='depth', point_size=1):
+    """
+    Scatter plot of a 3D pointmap in the given Axes3D (ax).
+    color_mode can be 'depth' to color by Z or 'none' for single color.
+    """
+    H, W, _ = pointmap.shape
+    points = pointmap.reshape(-1, 3)
+    valid = np.isfinite(points).all(axis=1) & (points[:, 2] > 0)
+    points = points[valid]
+    
+    # Color points by depth
+    depths = points[:, 2]
+    if depths.size == 0:
+        # If no valid points, just skip
+        return
+    if color_mode == 'depth':
+        cmin, cmax = depths.min(), depths.max()
+        denom = (cmax - cmin) if (cmax > cmin) else 1.0
+        colors = cm.viridis((depths - cmin) / denom)
+    else:
+        colors = 'blue'
+    
+    ax.scatter(points[:, 0], points[:, 1], points[:, 2],
+               s=point_size, c=colors, marker='.')
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+
+def visualize_pair_merged(
+    rgb1_path, depth1_path, pm1_path,
+    rgb2_path, depth2_path, pm2_path,
+    intrinsics_path, pose_path,
+    out_dir="visualized_pairs",
+    pair_name="unknown_pair",
+    title="Pair Visualization"
+):
+    """
+    Visualize a pair of images (RGB1 & RGB2), their depths, and their 3D pointmaps.
+    """
+
+    # Load data for view1
+    rgb1 = load_rgb_image(rgb1_path)
+    depth1 = load_depth(depth1_path)
+    pm1 = load_pointmap(pm1_path)
+
+    # Load data for view2
+    rgb2 = load_rgb_image(rgb2_path)
+    depth2 = load_depth(depth2_path)
+    pm2 = load_pointmap(pm2_path)
+
+    # Load intrinsics & pose
+    if os.path.exists(intrinsics_path):
+        intrinsics = np.load(intrinsics_path)
+    else:
+        intrinsics = None
+    
+    if os.path.exists(pose_path):
+        pose = np.load(pose_path)
+    else:
+        pose = None
+
+    # Print them to console
+    print(f"\n=== Visualizing pair: {pair_name} ===")
+    print("RGB1:", rgb1_path)
+    print("Depth1:", depth1_path, depth1.shape)
+    print("Pointmap1:", pm1_path, pm1.shape)
+    print("RGB2:", rgb2_path)
+    print("Depth2:", depth2_path, depth2.shape)
+    print("Pointmap2:", pm2_path, pm2.shape)
+    print("Intrinsics:", intrinsics_path, "(exists? ", os.path.exists(intrinsics_path), ")")
+    print("Pose:", pose_path, "(exists? ", os.path.exists(pose_path), ")")
+
+    # Create figure
+    fig = plt.figure(figsize=(16, 10))
+    fig.suptitle(title, fontsize=16)
+
+    # Subplot 1: RGB Image 1
+    ax1 = fig.add_subplot(2, 3, 1)
+    ax1.imshow(rgb1)
+    ax1.set_title("RGB Image 1")
+    ax1.axis("off")
+
+    # Subplot 2: Depth 1
+    ax2 = fig.add_subplot(2, 3, 2)
+    im2 = ax2.imshow(depth1, cmap="plasma")
+    ax2.set_title("Depth 1")
+    ax2.axis("off")
+    fig.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04, label="Depth")
+
+    # Subplot 3: Point Cloud 1
+    ax3 = fig.add_subplot(2, 3, 3, projection='3d')
+    plot_point_cloud(ax3, pm1, color_mode='depth')
+    ax3.set_title("3D Pointmap 1")
+
+    # Subplot 4: RGB Image 2
+    ax4 = fig.add_subplot(2, 3, 4)
+    ax4.imshow(rgb2)
+    ax4.set_title("RGB Image 2")
+    ax4.axis("off")
+
+    # Subplot 5: Depth 2
+    ax5 = fig.add_subplot(2, 3, 5)
+    im5 = ax5.imshow(depth2, cmap="plasma")
+    ax5.set_title("Depth 2")
+    ax5.axis("off")
+    fig.colorbar(im5, ax=ax5, fraction=0.046, pad=0.04, label="Depth")
+
+    # Subplot 6: Point Cloud 2
+    ax6 = fig.add_subplot(2, 3, 6, projection='3d')
+    plot_point_cloud(ax6, pm2, color_mode='depth')
+    ax6.set_title("3D Pointmap 2")
+
+    plt.tight_layout()
+
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"{pair_name}.png")
+    plt.show()
+    plt.savefig(out_path)
+    plt.close()
+    print(f"Saved figure to: {out_path}")
