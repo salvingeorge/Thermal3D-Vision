@@ -464,7 +464,8 @@ def visualize_pair(
     rgb1_path, depth1_path, pm1_path,
     rgb2_path, depth2_path, pm2_path,
     intrinsics_path, pose_path,
-    title="Pair Visualization"
+    title="Pair Visualization",
+    camera_size = 100
 ):
     """
     Visualize a pair of images (RGB1 & RGB2), their depths, and their 3D pointmaps.
@@ -531,7 +532,7 @@ def visualize_pair(
     
     # Add camera poses
     pose1 = np.eye(4)  # Identity for camera 1 (reference frame)
-    plot_cameras(ax_combined, pose1=pose1, pose2=pose, size=0.2)
+    plot_cameras(ax_combined, pose1=pose1, pose2=pose, size = camera_size)
     
     ax_combined.set_title("3D View with Combined Camera Poses")
 
@@ -727,7 +728,8 @@ def visualize_pair_merged(
     intrinsics_path, pose_path,
     out_dir="visualized_pairs",
     pair_name="unknown_pair",
-    title="Pair Visualization"
+    title="Pair Visualization",
+    print_console = False
 ):
     """
     Visualize a pair of images (RGB1 & RGB2), their depths, and their 3D pointmaps.
@@ -755,15 +757,16 @@ def visualize_pair_merged(
         pose = None
 
     # Print them to console
-    print(f"\n=== Visualizing pair: {pair_name} ===")
-    print("RGB1:", rgb1_path)
-    print("Depth1:", depth1_path, depth1.shape)
-    print("Pointmap1:", pm1_path, pm1.shape)
-    print("RGB2:", rgb2_path)
-    print("Depth2:", depth2_path, depth2.shape)
-    print("Pointmap2:", pm2_path, pm2.shape)
-    print("Intrinsics:", intrinsics_path, "(exists? ", os.path.exists(intrinsics_path), ")")
-    print("Pose:", pose_path, "(exists? ", os.path.exists(pose_path), ")")
+    if print_console:    
+        print(f"\n=== Visualizing pair: {pair_name} ===")
+        print("RGB1:", rgb1_path)
+        print("Depth1:", depth1_path, depth1.shape)
+        print("Pointmap1:", pm1_path, pm1.shape)
+        print("RGB2:", rgb2_path)
+        print("Depth2:", depth2_path, depth2.shape)
+        print("Pointmap2:", pm2_path, pm2.shape)
+        print("Intrinsics:", intrinsics_path, "(exists? ", os.path.exists(intrinsics_path), ")")
+        print("Pose:", pose_path, "(exists? ", os.path.exists(pose_path), ")")
 
     # Create figure
     fig = plt.figure(figsize=(16, 10))
@@ -812,4 +815,4 @@ def visualize_pair_merged(
     plt.show()
     plt.savefig(out_path)
     plt.close()
-    print(f"Saved figure to: {out_path}")
+    # print(f"Saved figure to: {out_path}")

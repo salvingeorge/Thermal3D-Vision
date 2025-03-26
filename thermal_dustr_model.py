@@ -133,7 +133,6 @@ class ThermalDUSt3R(nn.Module):
         edge_magnitude = torch.sqrt(edge_x.pow(2) + edge_y.pow(2))
         
         # Combine original thermal image with enhanced edges
-        # This helps preserve thermal gradients which are critical for depth perception
         enhanced = x + self.edge_weight * edge_magnitude
         
         # Final scaling
@@ -177,8 +176,7 @@ class ThermalDUSt3R(nn.Module):
         base_model = load_dustr_model(weights_path, device, is_thermal=True)
         # Wrap the base model with ThermalDUSt3R
         model_wrapper = cls(base_model)
-        # Prepare a new state dict that maps the saved keys to our wrapper's keys.
-        # For instance, if keys in the checkpoint are prefixed with "model.", remove that prefix.
+        
         new_state = {}
         for key, value in state.items():
             if key.startswith("model."):
