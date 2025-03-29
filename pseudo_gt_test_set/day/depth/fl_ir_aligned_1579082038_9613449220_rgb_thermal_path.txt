@@ -1,0 +1,1 @@
+/home/nfs/inf6/data/datasets/ThermalDBs/Freiburg/test/day/ImagesIR/fl_ir_aligned_1579082038_961344922_ir.png
