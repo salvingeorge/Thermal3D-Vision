@@ -156,74 +156,118 @@ def run_inference(model, img_path, img_size=(224, 224), monocular=True, use_ther
     }
 
 
-def visualize_depth_result(img_path, results, output_path=None):
+def visualize_depth_result(img_path, results, output_path=None, img_size=(384, 384)):
     """
-    Create high-quality visualization of thermal image and depth prediction.
+    Create high-quality visualization of thermal image and depth prediction with enhanced coloring.
     
     Args:
         img_path: Path to the input thermal image
         results: Dictionary with inference results
         output_path: Path to save the visualization (if None, display instead)
+        img_size: Size for resizing the image
     """
-    # Load original thermal image
-    thermal_img_original = cv2.imread(img_path)
-    if thermal_img_original is None:
-        thermal_img_original = cv2.imread(img_path, cv2.IMREAD_ANYDEPTH)
+    # Load thermal image
+    thermal_img = cv2.imread(img_path, cv2.IMREAD_ANYDEPTH)
     
-    if thermal_img_original is not None:
-        if len(thermal_img_original.shape) == 2:
-            # For grayscale/thermal images
-            thermal_img = thermal_img_original.astype(np.float32)
-            if thermal_img.dtype == np.uint16:
-                thermal_img = thermal_img / 65535.0
-            else:
-                thermal_img = thermal_img / 255.0
-        else:
-            # For RGB images
-            thermal_img = cv2.cvtColor(thermal_img_original, cv2.COLOR_BGR2RGB) / 255.0
+    if thermal_img is None:
+        # Fallback to regular loading
+        thermal_img = cv2.imread(img_path)
+        if thermal_img is None:
+            print(f"Failed to load image from {img_path}")
+            return None
+    
+    # Detect and remove black borders
+    if len(thermal_img.shape) == 2:
+        # For grayscale/depth images
+        threshold = 10  # Adjust as needed for your images
+        non_black = thermal_img > threshold
+        rows = np.any(non_black, axis=1)
+        cols = np.any(non_black, axis=0)
+        
+        if np.sum(rows) > 0 and np.sum(cols) > 0:
+            row_indices = np.where(rows)[0]
+            col_indices = np.where(cols)[0]
+            if len(row_indices) > 0 and len(col_indices) > 0:
+                row_start, row_end = row_indices[[0, -1]]
+                col_start, col_end = col_indices[[0, -1]]
+                
+                # Add a small margin
+                row_start = max(0, row_start - 5)
+                row_end = min(thermal_img.shape[0] - 1, row_end + 5)
+                col_start = max(0, col_start - 5)
+                col_end = min(thermal_img.shape[1] - 1, col_end + 5)
+                
+                # Crop the image to remove black bars
+                thermal_img = thermal_img[row_start:row_end+1, col_start:col_end+1]
+    
+    # Process the thermal image
+    if thermal_img.dtype == np.uint16:
+        thermal_img = thermal_img.astype(np.float32) / 65535.0
     else:
-        print(f"Error: Could not load image {img_path}")
-        return None
+        thermal_img = thermal_img.astype(np.float32) / 255.0
     
-    # Create figure with two subplots
-    fig, axes = plt.subplots(1, 2, figsize=(14, 7))
+    # Convert to 3 channels if grayscale
+    if len(thermal_img.shape) == 2:
+        thermal_img = np.stack([thermal_img] * 3, axis=-1)
     
-    # Normalize thermal image for better contrast
-    if len(thermal_img.shape) > 2:
-        # Convert RGB to grayscale for visualization
-        thermal_gray = 0.299 * thermal_img[:,:,0] + 0.587 * thermal_img[:,:,1] + 0.114 * thermal_img[:,:,2]
-    else:
-        thermal_gray = thermal_img
+    # Resize to target size
+    thermal_img = cv2.resize(thermal_img, img_size)
     
-    # Enhance contrast for visualization
-    p2, p98 = np.percentile(thermal_gray, (2, 98))
-    thermal_display = np.clip((thermal_gray - p2) / (p98 - p2 + 1e-6), 0, 1)
+    # Convert to torch tensor [C, H, W]
+    thermal_tensor = torch.from_numpy(thermal_img.transpose(2, 0, 1)).float()
     
-    # Display thermal image
-    axes[0].imshow(thermal_display, cmap='inferno')
-    axes[0].set_title("Thermal Image", fontsize=14)
-    axes[0].axis("off")
+    # Apply contrast enhancement
+    enhanced_tensor = enhance_thermal_contrast(thermal_tensor)
     
-    # Display depth map with proper processing
+    # Extract depth and resize to match thermal image size
     depth = results["depth1"]
+    depth = cv2.resize(depth, img_size, interpolation=cv2.INTER_NEAREST)
+    
+    # Create figure with equal-sized subplots and better spacing
+    fig, axes = plt.subplots(1, 2, figsize=(16, 8), constrained_layout=True)
+    
+    # Process thermal image for visualization
+    if enhanced_tensor.shape[0] == 3:
+        viz_img = 0.299 * enhanced_tensor[0] + 0.587 * enhanced_tensor[1] + 0.114 * enhanced_tensor[2]
+    else:
+        viz_img = enhanced_tensor[0]
+    
+    viz_img = viz_img.cpu().numpy()
+    
+    # Enhance contrast
+    p2, p98 = np.percentile(viz_img, (2, 98))
+    viz_img = np.clip((viz_img - p2) / (p98 - p2 + 1e-6), 0, 1)
+    
+    # Convert to uint8 for colormap application
+    viz_img_uint8 = (viz_img * 255).astype(np.uint8)
+    
+    # Apply JET colormap (similar to what's in your first example)
+    colored_img = cv2.applyColorMap(viz_img_uint8, cv2.COLORMAP_JET)
+    colored_img = cv2.cvtColor(colored_img, cv2.COLOR_BGR2RGB)
+    
+    # Display enhanced thermal image with jet colormap
+    axes[0].imshow(colored_img)
+    axes[0].set_title("Enhanced Thermal Image", fontsize=16)
+    axes[0].axis("off")
     
     # Ensure depth values are positive and non-zero
     depth = np.maximum(depth, 1e-6)
     
-    # Visualize depth with plasma colormap for consistency
+    # Display depth prediction
     depth_vis = axes[1].imshow(depth, cmap='plasma')
-    axes[1].set_title("Depth Prediction", fontsize=14)
+    axes[1].set_title("Depth Prediction", fontsize=16)
     axes[1].axis("off")
     
-    # Add colorbar
-    cbar = fig.colorbar(depth_vis, ax=axes[1], fraction=0.046, pad=0.04)
-    cbar.set_label('Depth')
+    # Add colorbar with better positioning
+    cbar = fig.colorbar(depth_vis, ax=axes[1], fraction=0.046, pad=0.04, orientation='vertical')
+    cbar.set_label('Depth', fontsize=12)
     
-    plt.tight_layout()
-    
-    # Add timestamp
+    # Add timestamp at the bottom
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    plt.figtext(0.5, 0.01, f"Generated: {timestamp}", ha="center", fontsize=9)
+    plt.figtext(0.5, 0.01, f"Generated: {timestamp}", ha="center", fontsize=10)
+    
+    # Set specific figure size to ensure proper proportions
+    fig.set_size_inches(16, 7)
     
     # Save or display
     if output_path:
@@ -232,6 +276,7 @@ def visualize_depth_result(img_path, results, output_path=None):
         plt.close(fig)
         return output_path
     else:
+        plt.tight_layout()
         plt.show()
         return None
 

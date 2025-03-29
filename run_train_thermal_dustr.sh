@@ -6,7 +6,7 @@
 DATASET_DIR="/home/nfs/inf6/data/datasets/ThermalDBs/Freiburg"
 PSEUDO_GT_DIR="./pseudo_gt_data"
 WEIGHTS_PATH="./checkpoints/DUSt3R_ViTLarge_BaseDecoder_224_linear.pth"
-OUTPUT_MODEL="./checkpoints/thermal_dustr_model.pth"
+OUTPUT_MODEL="./checkpoints/thermal_model_fixed_range_preprocessing.pth"
 
 # Default training parameters
 EPOCHS=10
@@ -15,6 +15,7 @@ LEARNING_RATE=0.0001
 USE_THERMAL_AWARE_LOSS=0  # 0=disabled, 1=enabled
 EDGE_WEIGHT=0.5
 SMOOTHNESS_WEIGHT=0.3
+DETAIL_WEIGHT=0.4
 
 # Process command line arguments
 while [[ $# -gt 0 ]]; do
@@ -59,6 +60,10 @@ while [[ $# -gt 0 ]]; do
       SMOOTHNESS_WEIGHT="$2"
       shift 2
       ;;
+      --detail_weight)
+      DETAIL_WEIGHT="$2"
+      shift 2
+      ;;
     *)
       echo "Unknown option: $1"
       exit 1
@@ -85,7 +90,7 @@ CMD="python train_thermal_dustr.py \
 
 # Add thermal-aware loss parameters if enabled
 if [ $USE_THERMAL_AWARE_LOSS -eq 1 ]; then
-  CMD="$CMD --use_thermal_aware_loss --edge_weight $EDGE_WEIGHT --smoothness_weight $SMOOTHNESS_WEIGHT"
+  CMD="$CMD --use_thermal_aware_loss --edge_weight $EDGE_WEIGHT --smoothness_weight $SMOOTHNESS_WEIGHT --detail_weight $DETAIL_WEIGHT"
 fi
 
 # Execute the command
