@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# evaluate_thermal_depth.py
+# evaluate_test_thermal_depth.py
 
 import os
 import sys
@@ -83,12 +83,12 @@ def run_inference(model, img_path, img_size=(224, 224), monocular=True):
     """Run inference on a thermal image to predict depth."""
     device = next(model.parameters()).device
     
-    # Load and preprocess image - use the exact same preprocessing as in thermal_dustr_inference.py
+    # Load and preprocess image
     img = load_and_preprocess_thermal_image(img_path, img_size)
     if img is None:
         return None
     
-    # Prepare input in the same format as in thermal_dustr_inference.py
+    # Prepare input in the same format as in training
     view1 = {"img": img.unsqueeze(0).to(device), "instance": []}
     
     if monocular:
@@ -100,14 +100,14 @@ def run_inference(model, img_path, img_size=(224, 224), monocular=True):
     with torch.no_grad():
         output = model(view1, view2)
     
-    # Extract predictions - using same logic as thermal_dustr_inference.py
+    # Extract predictions
     if isinstance(output, tuple):
         pred1, pred2 = output
     else:
         pred1 = output.get("pred1", {})
         pred2 = output.get("pred2", {})
     
-    # Extract pointmaps using same extraction logic
+    # Extract pointmaps
     if isinstance(pred1, dict):
         pointmap1 = pred1.get("pts3d")
         if "pts3d_in_other_view" in pred2:
@@ -159,7 +159,6 @@ def run_inference(model, img_path, img_size=(224, 224), monocular=True):
         "confidence2": confidence2.numpy()
     }
 
-# Add this function to load and preprocess the thermal image in exactly the same way
 def load_and_preprocess_thermal_image(path, img_size=(224, 224)):
     """Load and preprocess a thermal image for inference using same steps as training."""
     if not os.path.exists(path):
@@ -176,7 +175,7 @@ def load_and_preprocess_thermal_image(path, img_size=(224, 224)):
             return None
         thermal_img = cv2.cvtColor(thermal_img, cv2.COLOR_BGR2RGB)
     
-    # Normalize based on bit depth - same as training
+    # Normalize based on bit depth
     if thermal_img.dtype == np.uint16:
         thermal_img = thermal_img.astype(np.float32) / 65535.0
     else:
@@ -196,58 +195,69 @@ def load_and_preprocess_thermal_image(path, img_size=(224, 224)):
     thermal_img = enhance_thermal_contrast(thermal_img)
     
     return thermal_img
+
+def find_matching_depth_file(thermal_path, depth_dir):
+    """Find the corresponding depth file for a thermal image path."""
+    thermal_basename = os.path.basename(thermal_path)
+    thermal_name = os.path.splitext(thermal_basename)[0]  # Remove .png
     
-def check_pseudo_gt_directories(base_dir):
-    """Print information about what files exist in the pseudo-GT directories."""
-    print(f"\nExamining contents of pseudo-GT directory: {base_dir}")
+    # Extract the identifier part (timestamp) from thermal filename
+    # E.g., from fl_ir_aligned_1570730891_191987444_ir.png get 1570730891_191987444
+    parts = thermal_name.split('_')
+    if len(parts) < 3:
+        return None
+        
+    timestamp = '_'.join(parts[2:-1])  # Extract parts between prefix and _ir
     
-    # Check if directory exists
-    if not os.path.exists(base_dir):
-        print(f"ERROR: Directory {base_dir} does not exist!")
-        return
+    # Construct potential RGB name - add '0' to the last numeric part
+    last_numeric = parts[-2]
+    rgb_numeric = last_numeric + '0'
+    rgb_basename = f"fl_ir_aligned_{timestamp}_{rgb_numeric}_rgb"
     
-    # List all subdirectories
-    subdirs = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
-    print(f"Found subdirectories: {subdirs}")
+    # First try direct matching
+    depth_file = os.path.join(depth_dir, f"{rgb_basename}_depth.npy")
+    if os.path.exists(depth_file):
+        return depth_file
     
-    # Examine depth directories
-    for depth_dir in ['depth1', 'depth2']:
-        dir_path = os.path.join(base_dir, depth_dir)
-        if not os.path.exists(dir_path):
-            print(f"- {depth_dir}: Directory not found!")
+    # Try glob pattern matching
+    pattern = os.path.join(depth_dir, f"*{timestamp}*_depth.npy")
+    matching_files = glob.glob(pattern)
+    
+    if matching_files:
+        return matching_files[0]
+    
+    # Try more flexible matching - just check every depth file
+    for filename in os.listdir(depth_dir):
+        if not filename.endswith('_depth.npy'):
             continue
             
-        files = [f for f in os.listdir(dir_path) if f.endswith('.npy')]
-        print(f"- {depth_dir}: Contains {len(files)} .npy files")
+        # Extract timestamp from depth file
+        parts = filename.split('_')
+        if len(parts) < 3:
+            continue
+            
+        file_timestamp = '_'.join(parts[2:4])  # Get the timestamp portions
         
-        if len(files) > 0:
-            print(f"  Sample filenames: {files[:3]}")
+        # Check if timestamps are similar
+        if timestamp in file_timestamp or file_timestamp in timestamp:
+            return os.path.join(depth_dir, filename)
     
-    # Check if we have pair files
-    pair_dirs = ['pointmap1', 'pointmap2']
-    for pair_dir in pair_dirs:
-        dir_path = os.path.join(base_dir, pair_dir)
-        if os.path.exists(dir_path):
-            pair_files = [f for f in os.listdir(dir_path) if f.endswith('.npy')]
-            if len(pair_files) > 0:
-                print(f"- {pair_dir}: Sample pair files: {pair_files[:3]}")
+    return None
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate Thermal DUSt3R Model")
+    parser = argparse.ArgumentParser(description="Evaluate Thermal DUSt3R Model on Test Dataset")
     parser.add_argument("--model", type=str, required=True, 
                         help="Path to your fine-tuned thermal DUSt3R model")
-    parser.add_argument("--dataset_dir", type=str, required=True,
-                        help="Root directory of the Freiburg dataset")
-    parser.add_argument("--pseudo_gt_dir", type=str, required=True,
+    parser.add_argument("--thermal_dir", type=str, default="/home/nfs/inf6/data/datasets/ThermalDBs/Freiburg/test/night/ImagesIR",
+                        help="Directory with test thermal images")
+    parser.add_argument("--pseudo_gt_dir", type=str, default="pseudo_gt_test_set/depth",
                         help="Directory containing pseudo-GT depth maps")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="Directory to save evaluation results")
     parser.add_argument("--img_size", type=int, nargs=2, default=[224, 224],
                         help="Input image size (width height)")
-    parser.add_argument("--num_samples", type=int, default=50,
-                        help="Number of sample images to evaluate")
-    parser.add_argument("--sequences", type=str, nargs='+', default=None,
-                        help="Specific sequences to evaluate")
+    parser.add_argument("--num_samples", type=int, default=0,
+                        help="Number of sample images to evaluate (0=all)")
     args = parser.parse_args()
     
     # Create output directory
@@ -258,125 +268,49 @@ def main():
     model = load_dustr_model(args.model, device)
     model.eval()
     
-    check_pseudo_gt_directories(args.pseudo_gt_dir)
+    # Check if pseudo-GT directory exists
+    if not os.path.exists(args.pseudo_gt_dir):
+        print(f"ERROR: Pseudo-GT directory {args.pseudo_gt_dir} does not exist!")
+        return
+        
+    depth_files = [f for f in os.listdir(args.pseudo_gt_dir) if f.endswith('_depth.npy')]
+    print(f"Found {len(depth_files)} depth files in pseudo-GT directory")
+    if depth_files:
+        print(f"Sample depth files: {depth_files[:3]}")
+    
+    # Get all thermal images in the test dir
+    thermal_files = sorted(glob.glob(os.path.join(args.thermal_dir, '*.png')))
+    print(f"Found {len(thermal_files)} thermal images in test directory")
+    
+    # Limit samples if requested
+    if args.num_samples > 0 and args.num_samples < len(thermal_files):
+        np.random.seed(42)  # For reproducibility
+        thermal_files = np.random.choice(thermal_files, args.num_samples, replace=False).tolist()
     
     # Initialize metrics collection
     all_metrics = []
     
-    # Find sequences to process
-    train_dir = os.path.join(args.dataset_dir, 'train')
-    if not os.path.exists(train_dir):
-        train_dir = args.dataset_dir  # Use dataset_dir if 'train' doesn't exist
-    
-    if args.sequences is None:
-        sequences = [seq for seq in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, seq))]
-    else:
-        sequences = args.sequences
-    
-    print(f"Found {len(sequences)} sequences: {sequences}")
-    
-    # Collect thermal paths and corresponding RGB paths
-    thermal_rgb_pairs = []
-    
-    for seq_name in sequences:
-        seq_dir = os.path.join(train_dir, seq_name)
-        if not os.path.isdir(seq_dir):
+    # Process each thermal image
+    for thermal_path in tqdm(thermal_files, desc="Evaluating"):
+        # Find matching depth file
+        gt_depth_path = find_matching_depth_file(thermal_path, args.pseudo_gt_dir)
+        
+        if not gt_depth_path:
+            print(f"No matching depth file found for {os.path.basename(thermal_path)}")
             continue
-            
-        # Find all numbered subdirectories
-        drive_dirs = [d for d in os.listdir(seq_dir) if os.path.isdir(os.path.join(seq_dir, d))]
         
-        for drive in drive_dirs:
-            drive_path = os.path.join(seq_dir, drive)
-            
-            # Find thermal images in this drive
-            thermal_dir = os.path.join(drive_path, 'fl_ir_aligned')
-            if not os.path.isdir(thermal_dir):
-                continue
-                
-            thermal_files = sorted(glob.glob(os.path.join(thermal_dir, '*.png')))
-            
-            # For each thermal image, get RGB path using the same replacement logic as in training
-            for thermal_path in thermal_files:
-                rgb_path = thermal_path.replace('fl_ir_aligned', 'fl_rgb').replace('fl_ir_aligned_', 'fl_rgb_')
-                
-                if os.path.exists(rgb_path):
-                    thermal_rgb_pairs.append({
-                        'thermal': thermal_path,
-                        'rgb': rgb_path,
-                        'sequence': seq_name,
-                        'drive': drive
-                    })
-    
-    print(f"Found {len(thermal_rgb_pairs)} thermal images with matching RGB images")
-    
-    # Randomly sample pairs for evaluation
-    if len(thermal_rgb_pairs) > args.num_samples:
-        np.random.seed(42)  # For reproducibility
-        thermal_rgb_pairs = np.random.choice(thermal_rgb_pairs, args.num_samples, replace=False).tolist()
-    
-    # Process each image pair
-    for pair in tqdm(thermal_rgb_pairs, desc="Evaluating"):
-        thermal_path = pair['thermal']
-        rgb_path = pair['rgb']
-        
-        # Get base names using EXACTLY the same logic as pseudo_gt.py
-        rgb_basename = os.path.splitext(os.path.basename(rgb_path))[0]
-        
-        gt_depth_found = False
-        gt_depth = None
-        # First try in depth1 directory
-        gt_depth_path1 = os.path.join(args.pseudo_gt_dir, 'depth1', f"{rgb_basename}.npy")
-        if os.path.exists(gt_depth_path1):
-            gt_depth_path = gt_depth_path1
-            gt_depth_found = True
-            print(f"Found GT depth in depth1: {gt_depth_path1}")
-        else:
-            # If not found in depth1, try depth2
-            gt_depth_path2 = os.path.join(args.pseudo_gt_dir, 'depth2', f"{rgb_basename}.npy")
-            if os.path.exists(gt_depth_path2):
-                gt_depth_path = gt_depth_path2
-                gt_depth_found = True
-                print(f"Found GT depth in depth2: {gt_depth_path2}")
-            else:
-                # Check if we can find a file with similar name pattern
-                # Try more flexible matching by looking for files containing the timestamp part
-                # First extract the timestamp part (assuming format like fl_rgb_1579630825_2079809260)
-                parts = rgb_basename.split('_')
-                if len(parts) >= 3:  # At least has format like fl_rgb_timestamp
-                    timestamp_part = '_'.join(parts[2:])  # Get everything after prefix
-                    
-                    # Search with flexible pattern in both directories
-                    for depth_dir in ['depth1', 'depth2']:
-                        search_dir = os.path.join(args.pseudo_gt_dir, depth_dir)
-                        if not os.path.exists(search_dir):
-                            continue
-                            
-                        for filename in os.listdir(search_dir):
-                            if filename.endswith('.npy') and timestamp_part in filename:
-                                gt_depth_path = os.path.join(search_dir, filename)
-                                gt_depth_found = True
-                                print(f"Found GT depth with flexible matching in {depth_dir}: {filename}")
-                                break
-                        
-                        if gt_depth_found:
-                            break
-
-        if not gt_depth_found:
-            print(f"No GT depth found for {thermal_path} after searching both depth1 and depth2 directories")
-            continue
-
-        # Run inference with your model
+        # Run inference with model
         results = run_inference(
             model=model,
             img_path=thermal_path,
             img_size=tuple(args.img_size),
             monocular=True
         )
-
+        
         if results is None:
             print(f"Inference failed for {thermal_path}")
             continue
+            
         # Load GT depth
         try:
             gt_depth = np.load(gt_depth_path)
@@ -393,8 +327,8 @@ def main():
             all_metrics.append(metrics)
             
             # Create visualization
-            # (visualization code from previous example)
-            vis_path = os.path.join(args.output_dir, f"{rgb_basename}_comparison.png")
+            thermal_basename = os.path.splitext(os.path.basename(thermal_path))[0]
+            vis_path = os.path.join(args.output_dir, f"{thermal_basename}_comparison.png")
             
             plt.figure(figsize=(15, 5))
             
@@ -431,7 +365,7 @@ def main():
             plt.close()
             
             # Write metrics to individual file
-            metrics_path = os.path.join(args.output_dir, f"{rgb_basename}_metrics.txt")
+            metrics_path = os.path.join(args.output_dir, f"{thermal_basename}_metrics.txt")
             with open(metrics_path, 'w') as f:
                 f.write(f"RMSE: {metrics['rmse']:.4f}\n")
                 f.write(f"Acc[<1.25]: {metrics['acc_1.25']:.4f}\n")
@@ -444,7 +378,6 @@ def main():
     
     # Calculate and print average metrics
     if all_metrics:
-        # (same summary code as before)
         avg_rmse = np.mean([m['rmse'] for m in all_metrics if not np.isnan(m['rmse'])])
         avg_acc_1 = np.mean([m['acc_1.25'] for m in all_metrics])
         avg_acc_2 = np.mean([m['acc_1.25^2'] for m in all_metrics])
