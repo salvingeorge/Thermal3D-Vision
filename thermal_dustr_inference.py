@@ -12,11 +12,14 @@ import cv2
 from pathlib import Path
 import types
 from datetime import datetime
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.cm as cm  # For colormaps
 
 # Import functions from your training pipeline
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from utils.preprocessing import enhance_thermal_contrast
 from thermal_dustr_model import load_dustr_model, ThermalDUSt3R
+from utils.visualize import plot_point_cloud
 
 
 def load_and_preprocess_thermal_image(path, img_size=(224, 224)):
@@ -224,7 +227,8 @@ def visualize_depth_result(img_path, results, output_path=None, img_size=(384, 3
     depth = cv2.resize(depth, img_size, interpolation=cv2.INTER_NEAREST)
     
     # Create figure with equal-sized subplots and better spacing
-    fig, axes = plt.subplots(1, 2, figsize=(16, 8), constrained_layout=True)
+    fig = plt.figure(figsize=(20, 6), constrained_layout=True)
+    gs = fig.add_gridspec(1, 3)
     
     # Process thermal image for visualization
     if enhanced_tensor.shape[0] == 3:
@@ -246,21 +250,30 @@ def visualize_depth_result(img_path, results, output_path=None, img_size=(384, 3
     colored_img = cv2.cvtColor(colored_img, cv2.COLOR_BGR2RGB)
     
     # Display enhanced thermal image with jet colormap
-    axes[0].imshow(colored_img)
-    axes[0].set_title("Enhanced Thermal Image", fontsize=16)
-    axes[0].axis("off")
+    # Thermal image subplot
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.imshow(colored_img)
+    ax1.set_title("Enhanced Thermal Image", fontsize=16)
+    ax1.axis("off")
     
     # Ensure depth values are positive and non-zero
     depth = np.maximum(depth, 1e-6)
     
     # Display depth prediction
-    depth_vis = axes[1].imshow(depth, cmap='plasma')
-    axes[1].set_title("Depth Prediction", fontsize=16)
-    axes[1].axis("off")
+    # Depth map subplot
+    ax2 = fig.add_subplot(gs[0, 1])
+    depth_vis = ax2.imshow(depth, cmap='plasma')
+    ax2.set_title("Depth Prediction", fontsize=16)
+    ax2.axis("off")
     
     # Add colorbar with better positioning
-    cbar = fig.colorbar(depth_vis, ax=axes[1], fraction=0.046, pad=0.04, orientation='vertical')
+    cbar = fig.colorbar(depth_vis, ax=ax2, fraction=0.046, pad=0.04, orientation='vertical')
     cbar.set_label('Depth', fontsize=12)
+    
+     # 3D point cloud subplot
+    ax3 = fig.add_subplot(gs[0, 2], projection='3d')
+    plot_point_cloud(ax3, results["pointmap1"], color_mode='depth', point_size=1)
+    ax3.set_title("Predicted 3D Point Cloud", fontsize=16)
     
     # Add timestamp at the bottom
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
