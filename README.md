@@ -26,6 +26,7 @@ pip install -r requirements.txt
 
 ### Download pre-trained models
 ```bash
+chmod +x /scripts/download_models.sh
 ./scripts/download_models.sh
 ```
 
