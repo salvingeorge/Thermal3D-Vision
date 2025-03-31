@@ -1,4 +1,0 @@
-Number of images evaluated: 32
-Average RMSE: 2.7728
-Average Acc[<1.25]: 0.3833
-Average Acc[<1.25^2]: 0.6630
