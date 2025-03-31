@@ -8,7 +8,7 @@ import cv2
 from PIL import Image
 
 
-from utils.preprocessing import enhance_thermal_contrast
+from utils.preprocessing import enhance_thermal_contrast, enhance_thermal_fixed_range
 
 class FreiburgDataset(Dataset):
     """Dataset for loading thermal image pairs with pseudo-GT for DUSt3R/MASt3R training."""
@@ -108,6 +108,7 @@ class FreiburgDataset(Dataset):
         # Apply contrast enhancement
         if thermal_img1 is not None:
             thermal_img1 = enhance_thermal_contrast(thermal_img1)
+            # thermal_img1 = enhance_thermal_fixed_range(thermal_img1)
         else:
             print(f"Warning: Could not load thermal image from {thermal_path1}")
             # Either return None for this sample or create a dummy tensor
@@ -115,6 +116,7 @@ class FreiburgDataset(Dataset):
         
         if thermal_img2 is not None:
             thermal_img2 = enhance_thermal_contrast(thermal_img2)
+            # thermal_img2 = enhance_thermal_fixed_range(thermal_img2)
         else:
             print(f"Warning: Could not load thermal image from {thermal_path2}")
             # Either return None for this sample or create a dummy tensor
@@ -233,23 +235,16 @@ class FreiburgDataset(Dataset):
             print(f"  File exists: {os.path.exists(pointmap1_path)}")
     
     def _load_thermal_image(self, path):
-        """Helper to load and preprocess thermal images."""
+        # Load raw thermal without normalizing by 65535
         thermal_img = cv2.imread(path, cv2.IMREAD_ANYDEPTH)
         if thermal_img is None:
             return None
-
-        if thermal_img.dtype == np.uint16:
-            thermal_img = thermal_img.astype(np.float32) / 65535.0
-        else:
-            thermal_img = thermal_img.astype(np.float32) / 255.0
+        thermal_img = cv2.resize(thermal_img, self.img_size)
+        thermal_img = thermal_img.astype(np.float32)  # Keep raw values!
         
-        # Convert to 3 channels if grayscale
+        # Convert to tensor
         if len(thermal_img.shape) == 2:
             thermal_img = np.stack([thermal_img] * 3, axis=-1)
-        
-        thermal_img = cv2.resize(thermal_img, self.img_size)
-        
-        # Convert to torch tensor [C, H, W]
         thermal_img = torch.from_numpy(thermal_img.transpose(2, 0, 1)).float()
         return thermal_img
     
