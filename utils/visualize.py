@@ -231,7 +231,7 @@ def log_sample_images(wandb_run, thermal1, thermal2, pred_depth1, gt_depth1, sam
     
     
 
-from utils.preprocessing import enhance_thermal_contrast
+from utils.preprocessing import enhance_thermal_contrast, enhance_thermal_fixed_range
 
 def visualize_enhanced_thermal(thermal_path, img_size=(224, 224), min_val=None, max_val=None, cmap='jet'):
     """
@@ -816,3 +816,31 @@ def visualize_pair_merged(
     plt.savefig(out_path)
     plt.close()
     # print(f"Saved figure to: {out_path}")
+def show_image(image_path):
+    """
+    Open and display a PNG image using matplotlib
+    
+    Args:
+        image_path (str): Path to the PNG image file
+    """
+    # Check if file exists
+    if not os.path.exists(image_path):
+        print(f"Error: File {image_path} does not exist!")
+        return
+    
+    # Read the image using OpenCV
+    image = cv2.imread(image_path)
+    
+    # Check if image was read successfully
+    if image is None:
+        print(f"Error: Could not read image from {image_path}")
+        return
+    
+    # Convert BGR to RGB (OpenCV reads in BGR, matplotlib displays in RGB)
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
+    # Display the image
+    plt.figure(figsize=(10, 8))
+    plt.imshow(image_rgb)
+    plt.axis('off')  # Turn off axis
+    plt.show()
